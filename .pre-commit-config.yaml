@@ -1,0 +1,19 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.13
+    hooks:
+      - id: ruff-format
+        files: ^(src/twagent|tests)/
+      - id: ruff
+        args: [--fix]
+        files: ^(src/twagent|tests)/
+
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        entry: ty check src/twagent
+        language: system
+        types: [python]
+        files: ^src/twagent/
+        pass_filenames: false
