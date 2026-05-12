@@ -1,0 +1,137 @@
+# Test fixture: covers all entity types from data-model.md.
+# Used by test_config.py (validation matrix) and downstream tests.
+schema_version = 1
+env_file = "secrets.env"
+
+[common]
+[common.vars]
+user_name  = "Tom"
+work_email = "test@example.com"
+
+# ─── Agents ─────────────────────────────────────────────────────────────
+[agents.claude-code]
+capabilities = ["instructions", "skills", "subagents", "mcp"]
+mcp_format   = "claude-code"
+
+[agents.claude-code.paths.global]
+instructions = ["~/.claude/CLAUDE.md"]
+skills       = ["~/.claude/skills"]
+subagents    = ["~/.claude/agents"]
+mcp          = ["~/.claude.json"]
+
+[agents.claude-code.paths.project]
+skills    = [".claude/skills"]
+subagents = [".claude/agents"]
+mcp       = [".mcp.json"]
+
+[agents.claude-code.templates]
+instructions = "claude-code.md.j2"
+
+[agents.claude-code.vars]
+agent_name = "Claude"
+extra_instructions = []
+
+[agents.copilot-cli]
+capabilities = ["instructions", "skills", "subagents", "mcp"]
+mcp_format   = "copilot-cli"
+
+[agents.copilot-cli.paths.global]
+instructions = ["~/.copilot/copilot-instructions.md"]
+skills       = ["~/.copilot/skills"]
+subagents    = ["~/.copilot/agents"]
+mcp          = ["~/.copilot/mcp-config.json"]
+
+[agents.copilot-cli.paths.project]
+skills    = [".github/skills"]
+subagents = [".github/agents"]
+mcp       = [".github/copilot/mcp.json"]
+
+[agents.copilot-cli.templates]
+instructions = "copilot-cli.md.j2"
+
+[agents.copilot-cli.vars]
+agent_name = "Copilot"
+extra_instructions = []
+
+[agents.pi]
+capabilities = ["instructions", "skills", "mcp"]
+mcp_format   = "pi"
+
+[agents.pi.paths.global]
+instructions = ["~/.pi/agent/AGENTS.md"]
+skills       = ["~/.pi/agent/skills"]
+mcp          = ["~/.pi/mcp.json"]
+
+[agents.pi.paths.project]
+skills = [".pi/skills"]
+mcp    = [".pi/mcp.json"]
+
+[agents.pi.templates]
+instructions = "pi.md.j2"
+
+[agents.pi.vars]
+agent_name = "Pi"
+extra_instructions = []
+
+# ─── Artifact registry ──────────────────────────────────────────────────
+[skills.bkmr-memory]
+source      = "/tmp/twagent-test/skills/bkmr-memory"
+description = "Persistent memory via bkmr CLI"
+
+[skills.tw-review]
+source = "/tmp/twagent-test/skills/tw-review"
+
+[subagents.code-reviewer]
+source = "/tmp/twagent-test/agents/code-reviewer.md"
+
+[prompts.adr]
+source = "/tmp/twagent-test/prompts/adr.prompt.md"
+
+# ─── MCP servers ────────────────────────────────────────────────────────
+[servers.github]
+type    = "stdio"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-github"]
+env     = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+
+[servers.atlassian]
+type  = "http"
+url   = "https://example.com/mcp/"
+tools = ["*"]
+[servers.atlassian.headers]
+X-Atlassian-Token = "${CONFLUENCE_TOKEN}"
+X-Atlassian-Url   = "https://example.com/confluence"
+
+# ─── Profiles ───────────────────────────────────────────────────────────
+[profiles.minimal]
+description = "Bare-minimum daily set"
+skills      = ["bkmr-memory"]
+servers     = ["github"]
+
+[profiles.tw]
+extends     = ["minimal"]
+description = "Tom's default loadout"
+skills      = ["tw-review"]
+subagents   = ["code-reviewer"]
+prompts     = ["adr"]
+servers     = ["atlassian"]
+
+# ─── Scopes ─────────────────────────────────────────────────────────────
+[[scopes]]
+name    = "global"
+profile = "tw"
+agents  = ["claude-code", "copilot-cli", "pi"]
+
+[[scopes]]
+name    = "project:test"
+profile = "minimal"
+agents  = ["claude-code"]
+root    = "/tmp/twagent-test/proj"
+enabled = true
+
+[[scopes]]
+name    = "project:disabled"
+profile = "minimal"
+agents  = ["claude-code"]
+root    = "/tmp/twagent-test/disabled"
+enabled = false
