@@ -1,4 +1,7 @@
-# twagent
+<p align="left">
+  <img src="doc/twagent-logo.png" alt="twagent logo" width="300">
+</p>
+
 
 A Python CLI tool.
 
