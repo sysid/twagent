@@ -16,10 +16,11 @@ def deployed_world(tmp_path, monkeypatch):
     target_dir = tmp_path / "claude"
     target_dir.mkdir()
     config_text = f"""\
-schema_version = 1
+schema_version = 3
 [agents.c]
 capabilities = ["skills", "mcp"]
 mcp_format = "claude-code"
+global_profile = "p"
 [agents.c.paths.global]
 skills = ["{target_dir}/skills"]
 mcp = ["{target_dir}/.claude.json"]
@@ -36,10 +37,6 @@ env = {{ GITHUB_TOKEN = "${{GITHUB_TOKEN}}" }}
 [profiles.p]
 skills = ["x"]
 servers = ["gh"]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["c"]
 """
     cfg = tmp_path / "config.toml"
     cfg.write_text(config_text)

@@ -1,7 +1,12 @@
 """Canonical TOML schema: load, validate, build in-memory entities.
 
 Single source of truth for the model. Per data-model.md, this module owns
-Configuration, Common, Agent, Capability, FileArtifact, Server, Profile, Scope.
+Configuration, Common, Agent, Capability, FileArtifact, Server, Profile.
+
+Schema v2 dropped the Scope entity. Global deployment is now driven by
+each agent's `global_profile` attribute; ad-hoc local deployment is
+driven by the CLI (`apply --here --select ...`). See plan file:
+~/.claude/plans/maybe-we-need-to-cheerful-liskov.md
 
 Module is intentionally one file. Will SPLIT only when LOC pressure or test
 isolation demands it (Constitution Principle I — YAGNI).
@@ -21,7 +26,7 @@ from twagent.interpolate import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSION = 3
 
 CAPABILITIES = ("instructions", "skills", "subagents", "prompts", "mcp")
 Capability = Literal["instructions", "skills", "subagents", "prompts", "mcp"]
@@ -41,7 +46,6 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class Common:
-    templates_dir: Path | None = None
     vars: dict[str, object] = field(default_factory=dict)
 
 
@@ -51,9 +55,13 @@ class Agent:
     capabilities: tuple[Capability, ...]
     paths_global: dict[str, list[Path]]
     paths_project: dict[str, list[Path]]
-    templates: dict[str, str]
     vars: dict[str, object]
     mcp_format: str | None = None
+    # v2: name of the profile that defines what this agent gets when
+    # deployed globally (`twagent apply` with no flags). MUST resolve to an
+    # existing entry in Configuration.profiles; None means "agent has no
+    # global default; only deployable via --select".
+    global_profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,7 @@ class Profile:
     name: str
     description: str | None = None
     extends: list[str] = field(default_factory=list)
+    instructions: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     subagents: list[str] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
@@ -87,25 +96,16 @@ class Profile:
 
 
 @dataclass(frozen=True)
-class Scope:
-    name: str
-    profile: str
-    agents: list[str]
-    root: Path | None = None
-    enabled: bool = True
-
-
-@dataclass(frozen=True)
 class Configuration:
     schema_version: int
     common: Common
     agents: dict[str, Agent]
+    instructions: dict[str, FileArtifact]
     skills: dict[str, FileArtifact]
     subagents: dict[str, FileArtifact]
     prompts: dict[str, FileArtifact]
     servers: dict[str, Server]
     profiles: dict[str, Profile]
-    scopes: list[Scope]
     env_file: Path | None = None
     env_vars: dict[str, str] = field(default_factory=dict)
 
@@ -121,15 +121,15 @@ def load(path: Path) -> Configuration:
     raw = tomllib.loads(path.read_text())
     config = _build(raw, path.parent)
     logger.debug(
-        "config.load OK: %d agents, %d skills, %d subagents, %d prompts, "
-        "%d servers, %d profiles, %d scopes",
+        "config.load OK: %d agents, %d instructions, %d skills, %d subagents, "
+        "%d prompts, %d servers, %d profiles",
         len(config.agents),
+        len(config.instructions),
         len(config.skills),
         len(config.subagents),
         len(config.prompts),
         len(config.servers),
         len(config.profiles),
-        len(config.scopes),
     )
     return config
 
@@ -165,23 +165,30 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
 
     common = _build_common(raw.get("common", {}))
     agents = _build_agents(raw.get("agents", {}))
+    instructions = _build_artifacts(raw.get("instructions", {}))
     skills = _build_artifacts(raw.get("skills", {}))
     subagents = _build_artifacts(raw.get("subagents", {}))
     prompts = _build_artifacts(raw.get("prompts", {}))
     servers = _build_servers(raw.get("servers", {}))
     profiles = _build_profiles(raw.get("profiles", {}))
-    scopes = _build_scopes(raw.get("scopes", []))
+
+    if "scopes" in raw:
+        raise ConfigError(
+            "[[scopes]] blocks are not supported (removed in v2). "
+            "Use per-agent `global_profile` for global deployment + "
+            "`twagent apply --here --select <names>` for ad-hoc local."
+        )
 
     config = Configuration(
         schema_version=schema_version,
         common=common,
         agents=agents,
+        instructions=instructions,
         skills=skills,
         subagents=subagents,
         prompts=prompts,
         servers=servers,
         profiles=profiles,
-        scopes=scopes,
         env_file=env_file,
         env_vars=env_vars,
     )
@@ -190,10 +197,13 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
 
 
 def _build_common(raw: dict) -> Common:
-    templates_dir = None
     if "templates_dir" in raw:
-        templates_dir = Path(raw["templates_dir"]).expanduser()
-    return Common(templates_dir=templates_dir, vars=dict(raw.get("vars", {})))
+        raise ConfigError(
+            "[common] templates_dir is not supported in schema_version=3. "
+            "Templates are now first-class artifacts: declare them with "
+            "[instructions.<name>] source = '<absolute-or-~-prefixed-path>'."
+        )
+    return Common(vars=dict(raw.get("vars", {})))
 
 
 def _build_agents(raw: dict) -> dict[str, Agent]:
@@ -206,20 +216,27 @@ def _build_agents(raw: dict) -> dict[str, Agent]:
                     f"agents.{agent_id}: unknown capability {c!r}. "
                     f"Allowed: {', '.join(CAPABILITIES)}"
                 )
+        if "templates" in blob:
+            raise ConfigError(
+                f"agents.{agent_id}: [agents.{agent_id}.templates] is not "
+                f"supported in schema_version=3. Instructions are now "
+                f"registry-backed; declare [instructions.<name>] and add "
+                f'`instructions = ["<name>"]` to the relevant profile.'
+            )
         paths_blob = blob.get("paths", {})
         paths_global = _build_paths_section(paths_blob.get("global", {}))
         paths_project = _build_paths_section(paths_blob.get("project", {}))
-        templates = dict(blob.get("templates", {}))
         vars_ = dict(blob.get("vars", {}))
         mcp_format = blob.get("mcp_format")
+        global_profile = blob.get("global_profile")
         out[agent_id] = Agent(
             id=agent_id,
             capabilities=caps,
             paths_global=paths_global,
             paths_project=paths_project,
-            templates=templates,
             vars=vars_,
             mcp_format=mcp_format,
+            global_profile=global_profile,
         )
     return out
 
@@ -271,6 +288,7 @@ def _build_profiles(raw: dict) -> dict[str, Profile]:
             name=name,
             description=blob.get("description"),
             extends=list(blob.get("extends", [])),
+            instructions=list(blob.get("instructions", [])),
             skills=list(blob.get("skills", [])),
             subagents=list(blob.get("subagents", [])),
             prompts=list(blob.get("prompts", [])),
@@ -280,19 +298,6 @@ def _build_profiles(raw: dict) -> dict[str, Profile]:
     }
 
 
-def _build_scopes(raw: list) -> list[Scope]:
-    return [
-        Scope(
-            name=blob["name"],
-            profile=blob["profile"],
-            agents=list(blob["agents"]),
-            root=Path(blob["root"]).expanduser() if "root" in blob else None,
-            enabled=blob.get("enabled", True),
-        )
-        for blob in raw
-    ]
-
-
 # ─── Validation ─────────────────────────────────────────────────────────
 
 
@@ -300,7 +305,7 @@ def _validate(config: Configuration) -> None:
     logger.debug("config._validate: starting validation passes")
     _validate_agents(config)
     _validate_profiles(config)
-    _validate_scopes(config)
+    _validate_no_name_shadow(config)
     _check_artifact_sources(config)
     logger.debug("config._validate: all passes complete")
 
@@ -330,24 +335,26 @@ def _validate_agents(config: Configuration) -> None:
                     f"agents.{agent_id}: unknown mcp_format {agent.mcp_format!r}. "
                     f"Allowed: {', '.join(MCP_FORMATS)}"
                 )
-        if "instructions" in agent.capabilities:
-            if "instructions" not in agent.templates:
+        # In v3, instructions is a registry-backed artifact like skills.
+        # The agent only needs `instructions` in capabilities + a paths.global
+        # entry — both already enforced above. The "what template" decision
+        # lives on profiles (`profile.instructions = ["<name>"]`).
+        # global_profile reference resolution.
+        if agent.global_profile is not None:
+            if agent.global_profile not in config.profiles:
                 raise ConfigError(
-                    f"agents.{agent_id}: templates.instructions required when "
-                    f"'instructions' in capabilities"
+                    f"agents.{agent_id}: global_profile {agent.global_profile!r} "
+                    f"is not a defined profile"
                 )
-            if config.common.templates_dir is not None:
-                tpl = config.common.templates_dir / agent.templates["instructions"]
-                if not tpl.exists():
-                    raise ConfigError(
-                        f"agents.{agent_id}: instructions template not found: {tpl}"
-                    )
 
 
 def _validate_profiles(config: Configuration) -> None:
     logger.debug("config._validate_profiles: %d profile(s)", len(config.profiles))
     # Reference resolution per type.
     for prof in config.profiles.values():
+        for ref in prof.instructions:
+            if ref not in config.instructions:
+                raise ConfigError(f"profiles.{prof.name}: unknown instruction {ref!r}")
         for ref in prof.skills:
             if ref not in config.skills:
                 raise ConfigError(f"profiles.{prof.name}: unknown skill {ref!r}")
@@ -381,43 +388,44 @@ def _check_no_cycle(
         _check_no_cycle(profiles, parent, stack + [current])
 
 
-def _validate_scopes(config: Configuration) -> None:
-    logger.debug("config._validate_scopes: %d scope(s)", len(config.scopes))
-    seen_names: set[str] = set()
-    for scope in config.scopes:
-        if scope.name in seen_names:
-            raise ConfigError(f"scopes: duplicate name {scope.name!r}")
-        seen_names.add(scope.name)
-        if scope.profile not in config.profiles:
-            raise ConfigError(f"scopes.{scope.name}: unknown profile {scope.profile!r}")
-        if not scope.agents:
-            raise ConfigError(f"scopes.{scope.name}: agents list must be non-empty")
-        for agent_id in scope.agents:
-            if agent_id not in config.agents:
-                raise ConfigError(f"scopes.{scope.name}: unknown agent {agent_id!r}")
-    # Cross-scope: an (agent, target-location) pair must be unique among enabled
-    # scopes — otherwise two scopes write to the same physical paths and cause
-    # symlink churn. A "target location" is the scope's root (None for globals).
-    seen: dict[tuple[str, Path | None], str] = {}
-    for scope in config.scopes:
-        if not scope.enabled:
-            continue
-        for agent_id in scope.agents:
-            key = (agent_id, scope.root)
-            if key in seen:
-                where = "globally" if scope.root is None else f"under {scope.root}"
+def _validate_no_name_shadow(config: Configuration) -> None:
+    """A name MUST NOT exist as both a profile AND an artifact.
+
+    `--select` is polymorphic: each name can resolve to a profile (expanded)
+    or to an artifact (literal). Allowing the same name in both registries
+    would silently change behaviour depending on lookup order.
+    """
+    logger.debug("config._validate_no_name_shadow: scanning for collisions")
+    artifact_names: dict[str, str] = {}
+    for kind, registry in (
+        ("instructions", config.instructions),
+        ("skills", config.skills),
+        ("subagents", config.subagents),
+        ("prompts", config.prompts),
+        ("servers", config.servers),
+    ):
+        for name in registry:
+            if name in artifact_names:
                 raise ConfigError(
-                    f"scopes: agent {agent_id!r} appears {where} in two enabled "
-                    f"scopes ({seen[key]!r} and {scope.name!r}); "
-                    f"would cause symlink churn"
+                    f"name {name!r} is defined both as {artifact_names[name]!r} "
+                    f"and {kind!r}; artifact names MUST be unique across all "
+                    f"registries (skills/subagents/prompts/servers)"
                 )
-            seen[key] = scope.name
+            artifact_names[name] = kind
+    for prof_name in config.profiles:
+        if prof_name in artifact_names:
+            raise ConfigError(
+                f"name {prof_name!r} is defined as both a profile and "
+                f"a {artifact_names[prof_name]} artifact; --select uses "
+                f"polymorphic resolution — names MUST be unambiguous"
+            )
 
 
 def _check_artifact_sources(config: Configuration) -> None:
     """Missing source = warning, not hard error (FR-005)."""
     logger.debug("config._check_artifact_sources: scanning registries")
     for registry, kind in (
+        (config.instructions, "instructions"),
         (config.skills, "skills"),
         (config.subagents, "subagents"),
         (config.prompts, "prompts"),

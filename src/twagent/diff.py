@@ -1,7 +1,10 @@
-"""Diff: report per-file divergence between resolved config and on-disk state.
+"""Diff: report per-file divergence between resolved global config and on-disk state.
 
-Read-only. Reuses deploy.apply() in dry-run mode to derive the intended state,
-then compares against current disk contents.
+Schema v2: only the global side has a stable "intended state" (each agent's
+`global_profile`). Ad-hoc local deployments via `apply --here` have no
+persistent intended state to diff against, so `diff` covers globals only.
+
+Read-only. Never modifies the filesystem.
 """
 
 from __future__ import annotations
@@ -12,9 +15,9 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from twagent.config import Configuration
+from twagent.config import Agent, Configuration
 from twagent.deploy import (
-    _resolve_target_paths,
+    _global_targets,
     compile_mcp_for_agent,
     expand_profile,
     render_template,
@@ -34,35 +37,25 @@ def compute_diff(
     show_secrets: bool = False,
 ) -> DiffReport:
     logger.debug(
-        "diff.compute_diff: scopes=%d show_secrets=%s",
-        len(config.scopes),
+        "diff.compute_diff: agents=%d show_secrets=%s",
+        len(config.agents),
         show_secrets,
     )
     report = DiffReport()
-    for scope in config.scopes:
-        if not scope.enabled:
-            logger.debug("diff: skipping disabled scope %s", scope.name)
+    for agent_id, agent in config.agents.items():
+        if agent.global_profile is None:
+            logger.debug("diff: agent %s has no global_profile; skipping", agent_id)
             continue
-        if scope.root is not None and not scope.root.exists():
-            logger.debug(
-                "diff: skipping scope %s — root %s missing",
-                scope.name,
-                scope.root,
+        expanded = expand_profile(config, agent.global_profile)
+        for cap in agent.capabilities:
+            _diff_one(
+                config,
+                agent,
+                cap,
+                expanded,
+                report,
+                show_secrets=show_secrets,
             )
-            continue
-        expanded = expand_profile(config, scope.profile)
-        for agent_id in scope.agents:
-            agent = config.agents[agent_id]
-            for cap in agent.capabilities:
-                _diff_one(
-                    config,
-                    scope,
-                    agent,
-                    cap,
-                    expanded,
-                    report,
-                    show_secrets=show_secrets,
-                )
     logger.debug(
         "diff.compute_diff DONE: lines=%d in_sync=%s",
         len(report.lines),
@@ -73,34 +66,33 @@ def compute_diff(
 
 def _diff_one(
     config: Configuration,
-    scope,
-    agent,
+    agent: Agent,
     cap: str,
     expanded: dict[str, list[str]],
     report: DiffReport,
     *,
     show_secrets: bool,
 ) -> None:
-    logger.debug(
-        "diff._diff_one: scope=%s agent=%s cap=%s",
-        scope.name,
-        agent.id,
-        cap,
-    )
-    targets = _resolve_target_paths(scope, agent, cap)
+    logger.debug("diff._diff_one: agent=%s cap=%s", agent.id, cap)
+    targets = _global_targets(agent, cap)
     if not targets:
         return
     if cap == "instructions":
-        _diff_instructions(config, scope, agent, targets, report)
+        _diff_instructions(config, agent, targets, report)
     elif cap in ("skills", "subagents", "prompts"):
-        _diff_links(config, scope, agent, cap, expanded, targets, report)
+        _diff_links(config, agent, cap, expanded, targets, report)
     elif cap == "mcp":
         _diff_mcp(
-            config, scope, agent, expanded, targets, report, show_secrets=show_secrets
+            config,
+            agent,
+            expanded,
+            targets,
+            report,
+            show_secrets=show_secrets,
         )
 
 
-def _diff_instructions(config, scope, agent, targets, report):
+def _diff_instructions(config, agent, targets, report):
     template_name = agent.templates.get("instructions")
     if not template_name:
         return
@@ -116,7 +108,7 @@ def _diff_instructions(config, scope, agent, targets, report):
         current = target.read_text() if target.exists() else ""
         if current != intended:
             report.in_sync = False
-            label = f"{scope.name}/{agent.id}/instructions {target}"
+            label = f"{agent.id}/instructions {target}"
             diff = "\n".join(
                 difflib.unified_diff(
                     current.splitlines(),
@@ -129,14 +121,14 @@ def _diff_instructions(config, scope, agent, targets, report):
             report.lines.append(diff)
 
 
-def _diff_links(config, scope, agent, cap, expanded, targets, report):
+def _diff_links(config, agent, cap, expanded, targets, report):
     registry = getattr(config, cap)
     members = expanded.get(cap, [])
     intended = {n: registry[n].source for n in members if n in registry}
     for target_dir in targets:
         for name, src in intended.items():
             link = target_dir / name
-            label = f"{scope.name}/{agent.id}/{cap}/{name}"
+            label = f"{agent.id}/{cap}/{name}"
             if not link.exists() and not link.is_symlink():
                 report.in_sync = False
                 report.lines.append(f"+ {label} → {src} (missing)")
@@ -148,7 +140,7 @@ def _diff_links(config, scope, agent, cap, expanded, targets, report):
                 report.lines.append(f"~ {label}: was → {link.resolve()}; now → {src}")
 
 
-def _diff_mcp(config, scope, agent, expanded, targets, report, *, show_secrets):
+def _diff_mcp(config, agent, expanded, targets, report, *, show_secrets):
     server_names = expanded.get("servers", [])
     intended_dict = compile_mcp_for_agent(
         config,
@@ -160,13 +152,10 @@ def _diff_mcp(config, scope, agent, expanded, targets, report, *, show_secrets):
     intended_text = json.dumps(intended_dict, indent=2) + "\n"
     for target in targets:
         current = target.read_text() if target.exists() else ""
-        # When masking, also mask current to avoid spurious diffs from secret values.
-        compare_current = (
-            _mask_json_text(current, intended_dict) if not show_secrets else current
-        )
+        compare_current = _mask_json_text(current) if not show_secrets else current
         if compare_current != intended_text:
             report.in_sync = False
-            label = f"{scope.name}/{agent.id}/mcp {target}"
+            label = f"{agent.id}/mcp {target}"
             diff = "\n".join(
                 difflib.unified_diff(
                     compare_current.splitlines(),
@@ -179,12 +168,11 @@ def _diff_mcp(config, scope, agent, expanded, targets, report, *, show_secrets):
             report.lines.append(diff)
 
 
-def _mask_json_text(text: str, intended: dict) -> str:
-    """Re-emit current JSON with same field structure as intended, masking
-    values whose key shape matches an env/header in the intended doc.
+def _mask_json_text(text: str) -> str:
+    """Re-emit current JSON masking env/header values to '***'.
 
-    Cheap implementation: parse current as JSON, walk env/headers and replace
-    string values with '***'. Falls back to returning text unchanged on errors.
+    Cheap implementation: parse, walk env/headers, replace strings.
+    Returns text unchanged on parse error.
     """
     if not text:
         return ""

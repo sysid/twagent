@@ -5,7 +5,7 @@ import time
 import pytest
 
 from twagent.config import load
-from twagent.deploy import apply as run_apply
+from twagent.deploy import apply_global
 
 
 # Generous budget: spec SC-008 said "few seconds"; plan tightened to ≤ 5 s wall-clock.
@@ -50,13 +50,14 @@ def standard_world(tmp_path, monkeypatch):
     target_root.mkdir()
 
     config_text = f"""\
-schema_version = 1
+schema_version = 3
 [common]
 [common.vars]
 user_name = "Tom"
 [agents.c]
 capabilities = ["skills", "mcp"]
 mcp_format = "claude-code"
+global_profile = "p"
 [agents.c.paths.global]
 skills = ["{target_root}/skills"]
 mcp = ["{target_root}/.claude.json"]
@@ -69,10 +70,6 @@ mcp = [".m"]
 [profiles.p]
 skills = [{", ".join(skill_refs)}]
 servers = [{", ".join(server_refs)}]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["c"]
 """
     config_path = tmp_path / "config.toml"
     config_path.write_text(config_text)
@@ -82,7 +79,7 @@ agents = ["c"]
 def test_apply_under_budget(standard_world):
     config = load(standard_world)
     start = time.perf_counter()
-    result = run_apply(config)
+    result = apply_global(config)
     elapsed = time.perf_counter() - start
     assert not result.has_errors, result.errors
     assert elapsed < BUDGET_SECONDS, (

@@ -1,17 +1,18 @@
 # Test fixture: covers all entity types from data-model.md.
 # Used by test_config.py (validation matrix) and downstream tests.
-schema_version = 1
+# Schema v3: no [[scopes]]; instructions are first-class registry artifacts.
+schema_version = 3
 env_file = "secrets.env"
 
-[common]
 [common.vars]
 user_name  = "Tom"
 work_email = "test@example.com"
 
 # ─── Agents ─────────────────────────────────────────────────────────────
 [agents.claude-code]
-capabilities = ["instructions", "skills", "subagents", "mcp"]
-mcp_format   = "claude-code"
+capabilities   = ["instructions", "skills", "subagents", "mcp"]
+mcp_format     = "claude-code"
+global_profile = "tw"
 
 [agents.claude-code.paths.global]
 instructions = ["~/.claude/CLAUDE.md"]
@@ -24,16 +25,14 @@ skills    = [".claude/skills"]
 subagents = [".claude/agents"]
 mcp       = [".mcp.json"]
 
-[agents.claude-code.templates]
-instructions = "claude-code.md.j2"
-
 [agents.claude-code.vars]
 agent_name = "Claude"
 extra_instructions = []
 
 [agents.copilot-cli]
-capabilities = ["instructions", "skills", "subagents", "mcp"]
-mcp_format   = "copilot-cli"
+capabilities   = ["instructions", "skills", "subagents", "mcp"]
+mcp_format     = "copilot-cli"
+global_profile = "tw"
 
 [agents.copilot-cli.paths.global]
 instructions = ["~/.copilot/copilot-instructions.md"]
@@ -46,16 +45,14 @@ skills    = [".github/skills"]
 subagents = [".github/agents"]
 mcp       = [".github/copilot/mcp.json"]
 
-[agents.copilot-cli.templates]
-instructions = "copilot-cli.md.j2"
-
 [agents.copilot-cli.vars]
 agent_name = "Copilot"
 extra_instructions = []
 
 [agents.pi]
-capabilities = ["instructions", "skills", "mcp"]
-mcp_format   = "pi"
+capabilities   = ["instructions", "skills", "mcp"]
+mcp_format     = "pi"
+global_profile = "minimal"   # pi gets the lighter profile
 
 [agents.pi.paths.global]
 instructions = ["~/.pi/agent/AGENTS.md"]
@@ -66,12 +63,13 @@ mcp          = ["~/.pi/mcp.json"]
 skills = [".pi/skills"]
 mcp    = [".pi/mcp.json"]
 
-[agents.pi.templates]
-instructions = "pi.md.j2"
-
 [agents.pi.vars]
 agent_name = "Pi"
 extra_instructions = []
+
+# ─── Instructions registry ─────────────────────────────────────────────
+[instructions.AGENT-md]
+source = "/tmp/twagent-test/templates/AGENT.md.j2"
 
 # ─── Artifact registry ──────────────────────────────────────────────────
 [skills.bkmr-memory]
@@ -104,34 +102,18 @@ X-Atlassian-Url   = "https://example.com/confluence"
 
 # ─── Profiles ───────────────────────────────────────────────────────────
 [profiles.minimal]
-description = "Bare-minimum daily set"
-skills      = ["bkmr-memory"]
-servers     = ["github"]
+description  = "Bare-minimum daily set"
+instructions = ["AGENT-md"]
+skills       = ["bkmr-memory"]
+servers      = ["github"]
 
 [profiles.tw]
-extends     = ["minimal"]
-description = "Tom's default loadout"
-skills      = ["tw-review"]
-subagents   = ["code-reviewer"]
-prompts     = ["adr"]
-servers     = ["atlassian"]
+extends      = ["minimal"]
+description  = "Tom's default loadout"
+skills       = ["tw-review"]
+subagents    = ["code-reviewer"]
+prompts      = ["adr"]
+servers      = ["atlassian"]
 
-# ─── Scopes ─────────────────────────────────────────────────────────────
-[[scopes]]
-name    = "global"
-profile = "tw"
-agents  = ["claude-code", "copilot-cli", "pi"]
-
-[[scopes]]
-name    = "project:test"
-profile = "minimal"
-agents  = ["claude-code"]
-root    = "/tmp/twagent-test/proj"
-enabled = true
-
-[[scopes]]
-name    = "project:disabled"
-profile = "minimal"
-agents  = ["claude-code"]
-root    = "/tmp/twagent-test/disabled"
-enabled = false
+# Schema v3: no [[scopes]] blocks. Globals come from per-agent
+# `global_profile`; ad-hoc local deployment is via `apply --here --select`.

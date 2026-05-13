@@ -13,9 +13,10 @@ def test_clean_state_exit_zero(tmp_path):
     skills_dir = tmp_path / "claude" / "skills"
     skills_dir.mkdir(parents=True)
     config_text = f"""\
-schema_version = 1
+schema_version = 3
 [agents.c]
 capabilities = ["skills"]
+global_profile = "p"
 [agents.c.paths.global]
 skills = ["{skills_dir}"]
 [agents.c.paths.project]
@@ -25,10 +26,6 @@ skills = [".s"]
 source = "{skill_src}"
 [profiles.p]
 skills = ["x"]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["c"]
 """
     cfg = tmp_path / "config.toml"
     cfg.write_text(config_text)
@@ -40,9 +37,10 @@ def test_introduced_failure_exit_one(tmp_path):
     skills_dir = tmp_path / "claude" / "skills"
     skills_dir.mkdir(parents=True)
     config_text = f"""\
-schema_version = 1
+schema_version = 3
 [agents.c]
 capabilities = ["skills"]
+global_profile = "p"
 [agents.c.paths.global]
 skills = ["{skills_dir}"]
 [agents.c.paths.project]
@@ -52,10 +50,6 @@ skills = [".s"]
 source = "/nonexistent/source/path"
 [profiles.p]
 skills = ["ghost"]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["c"]
 """
     cfg = tmp_path / "config.toml"
     cfg.write_text(config_text)

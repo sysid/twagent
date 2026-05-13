@@ -1,4 +1,14 @@
-"""Deploy orchestration: symlink + render + compile per (scope, agent, capability).
+"""Deploy orchestration: symlink + render + compile.
+
+Schema v2: scopes are gone. Two entry points:
+
+    apply_global(config, ...)       — deploy each agent's `global_profile` to
+                                       its `paths.global.*` paths.
+    apply_here(config, cwd, ...)    — deploy a CLI-supplied selection (profiles
+                                       and/or artifacts) to cwd via `paths.project.*`.
+
+A `select` argument may be passed to either entry point to override the
+default selection (overrides `global_profile` for `apply_global`).
 
 Single module owns three deploy modes — kept together until tests want a split.
 """
@@ -16,7 +26,6 @@ from twagent.config import (
     Agent,
     Configuration,
     FileArtifact,
-    Scope,
     Server,
 )
 from twagent.interpolate import resolve_variables
@@ -42,14 +51,12 @@ class LinkResult:
 
 @dataclass
 class ApplyResult:
-    """Aggregated outcome of an apply() run.
+    """Aggregated outcome of an apply_*() run.
 
     For FR-032: end-of-run failure aggregation drives non-zero exit.
     """
 
     written: list[str] = field(default_factory=list)
-    skipped_scopes: list[str] = field(default_factory=list)
-    disabled_scopes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run_log: list[str] = field(default_factory=list)
@@ -70,6 +77,7 @@ def expand_profile(config: Configuration, profile_name: str) -> dict[str, list[s
     """
     logger.debug("deploy.expand_profile: profile=%s", profile_name)
     out: dict[str, list[str]] = {
+        "instructions": [],
         "skills": [],
         "subagents": [],
         "prompts": [],
@@ -91,14 +99,35 @@ def expand_profile(config: Configuration, profile_name: str) -> dict[str, list[s
 
     _walk(profile_name)
     logger.debug(
-        "deploy.expand_profile %s → skills=%d subagents=%d prompts=%d servers=%d",
+        "deploy.expand_profile %s → instructions=%d skills=%d subagents=%d "
+        "prompts=%d servers=%d",
         profile_name,
+        len(out["instructions"]),
         len(out["skills"]),
         len(out["subagents"]),
         len(out["prompts"]),
         len(out["servers"]),
     )
     return out
+
+
+# ─── Selection-derived capability set ───────────────────────────────────
+
+
+def _needed_capabilities(expanded: dict[str, list[str]]) -> set[str]:
+    """Map a per-kind selection to the set of CAPABILITY names it touches.
+
+    `servers` selection kind → `mcp` capability; everything else maps 1:1.
+    Used by both `apply_global` (when --select overrides) and `apply_here`
+    to skip capabilities the selection doesn't contribute to. Replaces the
+    instructions-special-case logic of the v2 code path.
+    """
+    needed: set[str] = set()
+    for kind, members in expanded.items():
+        if not members:
+            continue
+        needed.add("mcp" if kind == "servers" else kind)
+    return needed
 
 
 # ─── Render (instructions) ──────────────────────────────────────────────
@@ -163,7 +192,6 @@ def link_artifacts(
     if not target_dir.exists() and not dry_run:
         target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Detect dangling links unrelated to the deployment
     if target_dir.exists():
         for entry in target_dir.iterdir():
             if entry.is_symlink() and not entry.exists() and entry.name not in sources:
@@ -185,7 +213,6 @@ def link_artifacts(
                 target.symlink_to(source)
             result.relinked.append(name)
         elif target.exists():
-            # Real file/dir — never overwrite
             result.skipped_real.append(name)
         else:
             if not dry_run:
@@ -222,10 +249,7 @@ def compile_mcp_for_agent(
     if agent.mcp_format is None:
         raise ValueError(f"agents.{agent.id}: mcp_format unset")
 
-    # Build per-call variable map. For dry-run+mask, use sentinel values
-    # so any ${VAR} in env/headers becomes a literal mask in the output.
     if dry_run and not show_secrets:
-        # Mask: every interpolation becomes "***"
         variables = {k: "***" for k in config.env_vars}
     else:
         variables = dict(config.env_vars)
@@ -264,196 +288,248 @@ def _resolve_or_mask(
 ) -> str:
     """Resolve ${VAR}; mask the resolved value in dry-run+mask mode."""
     if dry_run and not show_secrets:
-        # variables map already contains "***" for every known key.
-        # For unknown vars, we can't mask without resolving them first;
-        # the resolver will raise for missing-default refs, which is fine.
         try:
             return resolve_variables(value, variables)
         except ValueError:
-            return value  # leave literal unresolved for preview
+            return value
     return resolve_variables(value, variables)
 
 
-# ─── Top-level orchestrator ─────────────────────────────────────────────
+# ─── Top-level orchestrators (NEW in v2) ────────────────────────────────
 
 
-@dataclass
-class DeployTarget:
-    """One concrete deployment unit: a path + the operation that produces it."""
-
-    scope: str
-    agent: str
-    capability: str
-    mode: str  # "symlink" | "render" | "compile"
-    target_path: Path
-    description: str = ""
-
-
-def apply(
+def apply_global(
     config: Configuration,
-    scope_filter: list[str] | None = None,
     agent_filter: list[str] | None = None,
-    only: list[str] | None = None,
     select: list[str] | None = None,
     dry_run: bool = False,
     show_secrets: bool = False,
 ) -> ApplyResult:
-    """Walk every (enabled scope, agent, capability) and deploy.
+    """Deploy each agent's global_profile to its paths.global.* paths.
 
-    `select`: if not None, narrow expanded artifact lists to ONLY these names.
-    Applies across all list-shaped types (skills/subagents/prompts/servers).
-    Per FR-021 it does NOT apply to instructions.
+    `select`: if not None, OVERRIDES the agent's `global_profile`. The selection
+    (per-kind expanded) is what gets deployed instead. Useful for ad-hoc
+    "deploy this profile/artifact set globally for the day" overrides.
     """
     logger.debug(
-        "deploy.apply: scope_filter=%s agent_filter=%s only=%s select=%s "
-        "dry_run=%s show_secrets=%s",
-        scope_filter,
+        "deploy.apply_global: agent_filter=%s select=%s dry_run=%s show_secrets=%s",
         agent_filter,
-        only,
         select,
         dry_run,
         show_secrets,
     )
     result = ApplyResult()
 
-    for scope in config.scopes:
-        if not scope.enabled:
-            logger.debug("deploy.apply: scope %s disabled — skipping", scope.name)
-            result.disabled_scopes.append(scope.name)
-            continue
-        if scope_filter and scope.name not in scope_filter:
-            logger.debug("deploy.apply: scope %s filtered out", scope.name)
-            continue
-        if scope.root is not None and not scope.root.exists():
-            msg = f"scope {scope.name!r}: root {scope.root} does not exist — skipped"
-            result.skipped_scopes.append(scope.name)
-            result.warnings.append(msg)
-            warnings.warn(msg, UserWarning, stacklevel=2)
+    selection_override: dict[str, list[str]] | None = None
+    if select is not None:
+        from twagent.selector import resolve_selection  # avoid cycle
+
+        selection_override = resolve_selection(select, config)
+
+    for agent_id, agent in config.agents.items():
+        if agent_filter and agent_id not in agent_filter:
             continue
 
-        expanded = expand_profile(config, scope.profile)
-        if select is not None:
-            expanded = {
-                kind: [n for n in members if n in select]
-                for kind, members in expanded.items()
-            }
+        if selection_override is not None:
+            expanded = selection_override
+        elif agent.global_profile is not None:
+            expanded = expand_profile(config, agent.global_profile)
+        else:
+            logger.debug(
+                "deploy.apply_global: agent %s has no global_profile and no "
+                "--select override; skipping",
+                agent_id,
+            )
+            continue
 
-        for agent_id in scope.agents:
-            if agent_filter and agent_id not in agent_filter:
-                logger.debug(
-                    "deploy.apply: agent %s filtered out in scope %s",
-                    agent_id,
-                    scope.name,
-                )
+        # When --select overrides, restrict deployed capabilities to those
+        # the selection actually touches. Bare apply (no select) keeps the
+        # full agent.capabilities iteration → renders instructions if
+        # global_profile lists one, etc.
+        if selection_override is not None:
+            allowed_caps = _needed_capabilities(expanded)
+            cap_iter = [c for c in agent.capabilities if c in allowed_caps]
+        else:
+            cap_iter = list(agent.capabilities)
+
+        for capability in cap_iter:
+            targets = _global_targets(agent, capability)
+            if not targets:
                 continue
-            agent = config.agents[agent_id]
-            for capability in agent.capabilities:
-                if only is not None and capability not in only:
-                    continue
-                logger.debug(
-                    "deploy.apply: deploying %s/%s/%s",
-                    scope.name,
-                    agent_id,
-                    capability,
-                )
-                _apply_one(
-                    config,
-                    scope,
-                    agent,
-                    capability,
-                    expanded,
-                    result,
-                    dry_run=dry_run,
-                    show_secrets=show_secrets,
-                )
+            _apply_one(
+                config,
+                agent,
+                capability,
+                expanded,
+                targets,
+                result,
+                dry_run=dry_run,
+                show_secrets=show_secrets,
+            )
 
     logger.debug(
-        "deploy.apply DONE: written=%d errors=%d warnings=%d "
-        "skipped_scopes=%d disabled_scopes=%d",
+        "deploy.apply_global DONE: written=%d errors=%d warnings=%d",
         len(result.written),
         len(result.errors),
         len(result.warnings),
-        len(result.skipped_scopes),
-        len(result.disabled_scopes),
     )
     return result
 
 
+def apply_here(
+    config: Configuration,
+    cwd: Path,
+    select: list[str],
+    agent_filter: list[str] | None = None,
+    dry_run: bool = False,
+    show_secrets: bool = False,
+) -> ApplyResult:
+    """Ad-hoc local deployment: render the selection under cwd via paths.project.
+
+    `select` is required (there is no per-cwd default profile).
+
+    Agent auto-selection: if `agent_filter` is None, deploys to every agent
+    whose capabilities can serve at least one kind present in the selection
+    (including instructions — instructions are now first-class artifacts
+    selected via the same name resolution as everything else).
+    """
+    logger.debug(
+        "deploy.apply_here: cwd=%s select=%s agent_filter=%s dry_run=%s show_secrets=%s",
+        cwd,
+        select,
+        agent_filter,
+        dry_run,
+        show_secrets,
+    )
+    result = ApplyResult()
+
+    from twagent.selector import resolve_selection  # avoid cycle
+
+    expanded = resolve_selection(select, config)
+    needed_caps = _needed_capabilities(expanded)
+
+    for agent_id, agent in config.agents.items():
+        if agent_filter and agent_id not in agent_filter:
+            continue
+        if not needed_caps & set(agent.capabilities):
+            logger.debug(
+                "deploy.apply_here: agent %s capabilities %s do not intersect "
+                "selection kinds %s; skipping",
+                agent_id,
+                list(agent.capabilities),
+                needed_caps,
+            )
+            continue
+
+        for capability in agent.capabilities:
+            if capability not in needed_caps:
+                continue
+            targets = _project_targets(agent, capability, cwd)
+            if not targets:
+                continue
+            _apply_one(
+                config,
+                agent,
+                capability,
+                expanded,
+                targets,
+                result,
+                dry_run=dry_run,
+                show_secrets=show_secrets,
+            )
+
+    logger.debug(
+        "deploy.apply_here DONE: written=%d errors=%d warnings=%d",
+        len(result.written),
+        len(result.errors),
+        len(result.warnings),
+    )
+    return result
+
+
+# ─── Per-(agent, capability) deploy dispatch ────────────────────────────
+
+
 def _apply_one(
     config: Configuration,
-    scope: Scope,
     agent: Agent,
     capability: str,
     expanded: dict[str, list[str]],
+    targets: list[Path],
     result: ApplyResult,
     *,
     dry_run: bool,
     show_secrets: bool,
 ) -> None:
-    paths = _resolve_target_paths(scope, agent, capability)
-    if not paths:
-        return
-
     if capability == "instructions":
-        _deploy_instructions(config, scope, agent, paths, result, dry_run=dry_run)
+        _deploy_instructions(config, agent, expanded, targets, result, dry_run=dry_run)
     elif capability in ("skills", "subagents", "prompts"):
         _deploy_file_artifacts(
             config,
-            scope,
             agent,
             capability,
             expanded,
-            paths,
+            targets,
             result,
             dry_run=dry_run,
         )
     elif capability == "mcp":
         _deploy_mcp(
             config,
-            scope,
             agent,
             expanded,
-            paths,
+            targets,
             result,
             dry_run=dry_run,
             show_secrets=show_secrets,
         )
 
 
-def _resolve_target_paths(scope: Scope, agent: Agent, capability: str) -> list[Path]:
-    if scope.root is None:
-        paths = agent.paths_global.get(capability, [])
-    else:
-        # Project-scope paths are joined under root (FR-013/FR-014)
-        relative = agent.paths_project.get(capability, [])
-        paths = [scope.root / p for p in relative]
-    return paths
+def _global_targets(agent: Agent, capability: str) -> list[Path]:
+    return list(agent.paths_global.get(capability, []))
+
+
+def _project_targets(agent: Agent, capability: str, cwd: Path) -> list[Path]:
+    """Project-relative paths joined under cwd. cwd is the user's chosen root."""
+    relative = agent.paths_project.get(capability, [])
+    return [cwd / p for p in relative]
 
 
 def _deploy_instructions(
     config: Configuration,
-    scope: Scope,
     agent: Agent,
+    expanded: dict[str, list[str]],
     targets: list[Path],
     result: ApplyResult,
     *,
     dry_run: bool,
 ) -> None:
-    template_name = agent.templates.get("instructions")
-    if not template_name:
-        return
-    if config.common.templates_dir is None:
-        # Try the package's bundled templates dir
-        from twagent import __path__ as pkg_path
+    """Render the (single) selected instruction template to each agent path.
 
-        templates_dir = Path(pkg_path[0]) / "templates"
-    else:
-        templates_dir = config.common.templates_dir
-    tpl_path = templates_dir / template_name
+    v3: instructions are first-class artifacts in `config.instructions`
+    referenced by name from `profile.instructions`. The expanded selection
+    contains 0..N instruction names; an agent has at most one instructions
+    output per `paths.global.instructions` entry, so we enforce ≤ 1.
+    """
+    members = expanded.get("instructions", [])
+    if not members:
+        return
+    if len(members) > 1:
+        result.errors.append(
+            f"{agent.id}/instructions: profile selection contains "
+            f"{len(members)} instructions ({', '.join(members)}); "
+            f"agents render at most ONE instruction per path."
+        )
+        return
+    name = members[0]
+    if name not in config.instructions:
+        result.errors.append(f"{agent.id}/instructions: unknown instruction {name!r}")
+        return
+    tpl_path = config.instructions[name].source
     try:
         rendered = render_template(tpl_path, config.common.vars, agent.vars)
     except Exception as exc:
-        result.errors.append(f"render {scope.name}/{agent.id}/instructions: {exc}")
+        result.errors.append(f"render {agent.id}/instructions/{name}: {exc}")
         return
     for target in targets:
         if dry_run:
@@ -466,7 +542,6 @@ def _deploy_instructions(
 
 def _deploy_file_artifacts(
     config: Configuration,
-    scope: Scope,
     agent: Agent,
     capability: str,
     expanded: dict[str, list[str]],
@@ -481,22 +556,23 @@ def _deploy_file_artifacts(
     for target_dir in targets:
         link_result = link_artifacts(sources, target_dir, dry_run=dry_run)
         for name in link_result.created + link_result.relinked:
-            label = f"{scope.name}/{agent.id}/{capability}/{name} → {target_dir}"
+            label = f"{agent.id}/{capability}/{name} → {target_dir}"
             if dry_run:
                 result.dry_run_log.append(f"symlink {label}")
             else:
                 result.written.append(label)
         for warning_name in link_result.dangling:
-            msg = f"{scope.name}/{agent.id}/{capability}: dangling link at {target_dir / warning_name}"
+            msg = (
+                f"{agent.id}/{capability}: dangling link at {target_dir / warning_name}"
+            )
             result.warnings.append(msg)
             warnings.warn(msg, UserWarning, stacklevel=2)
         for err in link_result.errors:
-            result.errors.append(f"{scope.name}/{agent.id}/{capability}: {err}")
+            result.errors.append(f"{agent.id}/{capability}: {err}")
 
 
 def _deploy_mcp(
     config: Configuration,
-    scope: Scope,
     agent: Agent,
     expanded: dict[str, list[str]],
     targets: list[Path],
@@ -515,7 +591,7 @@ def _deploy_mcp(
             show_secrets=show_secrets,
         )
     except Exception as exc:
-        result.errors.append(f"{scope.name}/{agent.id}/mcp: {exc}")
+        result.errors.append(f"{agent.id}/mcp: {exc}")
         return
     for target in targets:
         if dry_run:
@@ -534,9 +610,9 @@ def _indent(text: str, prefix: str = "  ") -> str:
 
 __all__ = [
     "ApplyResult",
-    "DeployTarget",
     "LinkResult",
-    "apply",
+    "apply_global",
+    "apply_here",
     "compile_mcp_for_agent",
     "expand_profile",
     "link_artifacts",

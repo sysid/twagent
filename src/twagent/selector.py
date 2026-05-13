@@ -22,6 +22,7 @@ _NONE_KEYWORD = "none"
 
 # Capability name → registry attribute on Configuration
 _KIND_TO_REGISTRY = {
+    "instructions": "instructions",
     "skills": "skills",
     "subagents": "subagents",
     "prompts": "prompts",
@@ -78,6 +79,74 @@ def resolve_profile(profile_name: str, kind: str, config: "Configuration") -> li
         raise ValueError(f"Unknown kind: {kind}. Allowed: {list(_KIND_TO_REGISTRY)}")
     expanded = expand_profile(config, profile_name)
     return list(expanded.get(kind, []))
+
+
+def resolve_selection(
+    names: list[str], config: "Configuration"
+) -> dict[str, list[str]]:
+    """Polymorphic name resolution for `--select` (NEW in v2).
+
+    Each name in the list resolves to either:
+      - a profile (expanded via `extends`, contributing its skills/subagents/
+        prompts/servers); OR
+      - a single artifact (literal contribution to its own kind).
+
+    Returns the merged per-kind expanded list, dedup'd preserving first-seen
+    order. Raises ValueError listing unknown names.
+
+    Name shadowing (a name defined as both profile and artifact) is rejected
+    at config load time, so this function can rely on unambiguous lookup.
+    """
+    logger.debug("selector.resolve_selection: names=%s", names)
+    from twagent.deploy import expand_profile  # local import: avoid cycle
+
+    out: dict[str, list[str]] = {
+        "instructions": [],
+        "skills": [],
+        "subagents": [],
+        "prompts": [],
+        "servers": [],
+    }
+
+    artifact_kind_of: dict[str, str] = {}
+    for kind in out:
+        for n in getattr(config, kind):
+            artifact_kind_of[n] = kind
+
+    unknown: list[str] = []
+    for name in names:
+        if name in config.profiles:
+            expanded = expand_profile(config, name)
+            for kind, members in expanded.items():
+                for m in members:
+                    if m not in out[kind]:
+                        out[kind].append(m)
+        elif name in artifact_kind_of:
+            kind = artifact_kind_of[name]
+            if name not in out[kind]:
+                out[kind].append(name)
+        else:
+            unknown.append(name)
+
+    if unknown:
+        avail_profiles = sorted(config.profiles)
+        avail_artifacts = sorted(artifact_kind_of)
+        raise ValueError(
+            f"Unknown name(s) in --select: {', '.join(unknown)}\n"
+            f"  Available profiles: {', '.join(avail_profiles) or '(none)'}\n"
+            f"  Available artifacts: {', '.join(avail_artifacts) or '(none)'}"
+        )
+
+    logger.debug(
+        "selector.resolve_selection: instructions=%d skills=%d subagents=%d "
+        "prompts=%d servers=%d",
+        len(out["instructions"]),
+        len(out["skills"]),
+        len(out["subagents"]),
+        len(out["prompts"]),
+        len(out["servers"]),
+    )
+    return out
 
 
 def is_interactive_terminal() -> bool:

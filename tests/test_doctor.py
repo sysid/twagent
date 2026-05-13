@@ -1,4 +1,4 @@
-"""US3: doctor reports introduced failures + clean state passes."""
+"""US3: doctor reports introduced failures + clean state passes (v2)."""
 
 from pathlib import Path
 
@@ -17,9 +17,10 @@ def base_world(tmp_path):
     skills_dir = tmp_path / "claude" / "skills"
     skills_dir.mkdir(parents=True)
     config_text = f"""\
-schema_version = 1
+schema_version = 3
 [agents.c]
 capabilities = ["skills"]
+global_profile = "p"
 [agents.c.paths.global]
 skills = ["{skills_dir}"]
 [agents.c.paths.project]
@@ -29,10 +30,6 @@ skills = [".skills"]
 source = "{skill_src}"
 [profiles.p]
 skills = ["bkmr"]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["c"]
 """
     config_path = tmp_path / "config.toml"
     config_path.write_text(config_text)
@@ -52,7 +49,6 @@ def test_clean_state_no_errors(base_world):
 def test_dangling_symlink_reported(base_world):
     config = load(base_world["config_path"])
     skills_dir: Path = base_world["skills_dir"]
-    # Plant a dangling symlink
     (skills_dir / "ghost").symlink_to(Path("/nonexistent/target"))
     report = check(config)
     assert report.has_errors
@@ -61,9 +57,7 @@ def test_dangling_symlink_reported(base_world):
 
 def test_missing_artifact_source_reported(base_world):
     config = load(base_world["config_path"])
-    # Move the source out from under the registry
     base_world["skill_src"].rename(base_world["skill_src"].parent / "moved")
-    # Re-load (load() re-validates and emits warning, but check() escalates to error)
     with pytest.warns(UserWarning):
         config = load(base_world["config_path"])
     report = check(config)
@@ -71,38 +65,31 @@ def test_missing_artifact_source_reported(base_world):
     assert any("bkmr" in e and "source does not exist" in e for e in report.errors)
 
 
-def test_disabled_scope_in_info_not_errors(tmp_path):
+def test_agent_without_global_profile_in_info(tmp_path):
+    """v2: agents with no global_profile are info-level (deployable via --here only)."""
     config_text = """\
-schema_version = 1
+schema_version = 3
 [agents.c]
 capabilities = []
 [agents.c.paths.global]
 [agents.c.paths.project]
 [profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["c"]
-[[scopes]]
-name = "off"
-profile = "p"
-agents = ["c"]
-enabled = false
 """
     config_path = tmp_path / "config.toml"
     config_path.write_text(config_text)
     config = load(config_path)
     report = check(config)
     assert not report.has_errors
-    assert any("off" in i and "disabled" in i for i in report.info)
+    assert any("c" in i and "no global_profile" in i for i in report.info)
 
 
 def test_capability_mismatch_in_info_not_errors(tmp_path):
-    """Profile lists subagents but agent lacks subagents capability → info-level."""
+    """global_profile contains subagents but agent lacks subagents capability → info."""
     config_text = """\
-schema_version = 1
+schema_version = 3
 [agents.c]
 capabilities = ["skills"]
+global_profile = "p"
 [agents.c.paths.global]
 skills = ["~/skills"]
 [agents.c.paths.project]
@@ -112,15 +99,10 @@ skills = [".skills"]
 source = "/tmp/x"
 [profiles.p]
 subagents = ["reviewer"]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["c"]
 """
     config_path = tmp_path / "config.toml"
     config_path.write_text(config_text)
-    with pytest.warns(UserWarning):  # source missing → load-time warning
+    with pytest.warns(UserWarning):
         config = load(config_path)
     report = check(config)
-    # Info-level mismatch, not an error
     assert any("subagents" in i and "lacks" in i for i in report.info)

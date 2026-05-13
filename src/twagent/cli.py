@@ -16,7 +16,7 @@ from rich.table import Table
 
 from twagent import __version__
 from twagent.config import ConfigError, load
-from twagent.deploy import apply as run_apply
+from twagent.deploy import apply_global, apply_here
 from twagent.diff import compute_diff
 from twagent.doctor import check as doctor_check
 from twagent.extractor import extract_from_file
@@ -24,7 +24,6 @@ from twagent.selector import (
     is_interactive_terminal,
     parse_select_value,
     select_interactive,
-    validate_names,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,18 +37,22 @@ Manages instructions, skills, subagents, prompts, and MCP servers across
 Claude Code, Copilot CLI, Pi, and friends from a single canonical TOML.
 
   Edit config       :  twagent edit                (or 'edit --init' first time)
-  See what's loaded :  twagent agents | profiles | scopes | status
-  Preview a deploy  :  twagent apply --dry-run     (secrets masked by default)
-  Deploy for real   :  twagent apply
+  See what's loaded :  twagent agents | profiles | status
+  Preview globals   :  twagent apply --dry-run     (secrets masked by default)
+  Deploy globally   :  twagent apply               (uses each agent's global_profile)
+  Deploy locally    :  twagent apply --here --select <names>
   See what changed  :  twagent diff
   Find drift        :  twagent doctor
 
 Glossary:
-  scope    A binding that says "deploy profile X to agents [A,B] (under root R)".
-           Without scopes, the rest of the config is just data.
+  agent    An AI assistant target with capabilities + paths + a default
+           profile (`global_profile`). bare `apply` deploys this profile.
   profile  A reusable bundle of artifact references (skills/subagents/
            prompts/MCP servers). Profiles can `extends` other profiles.
   artifact A single skill/subagent/prompt/MCP server, registered by name.
+
+  --select takes a mix of profile names AND artifact names.
+  --global vs --here: write to canonical agent paths vs cwd.
 """
 
 app = typer.Typer(
@@ -61,7 +64,6 @@ console = Console()
 err_console = Console(stderr=True)
 
 CAPABILITIES = ("instructions", "skills", "subagents", "prompts", "mcp")
-SELECTABLE = ("skills", "subagents", "prompts", "mcp")
 
 
 # ─── Global options ─────────────────────────────────────────────────────
@@ -144,74 +146,92 @@ def version() -> None:
 _APPLY_HELP = """\
 Deploy your resolved configuration to disk.
 
-By default ('twagent apply' with no flags) reconciles every enabled scope:
-renders instruction files, symlinks file artifacts, and writes per-agent
-MCP JSON. Idempotent — running it twice in a row should produce zero
-filesystem changes the second time.
+Two modes:
 
-How the filters compose:
-  --scope / --agent  pick WHICH scope(s) and WHICH agent(s) to act on.
-  --only             picks the kind of artifact (instructions / skills /
-                     subagents / prompts / mcp).
-  --select           picks individual artifacts by name (e.g. 'tw-review').
-                     Use 'none' to deploy zero of the selectable kinds.
+  --global   (default)  Deploy each agent's `global_profile` to its
+                        `paths.global.*` paths (~/.claude/, ~/.copilot/, ...).
+                        Idempotent. This is what bare `twagent apply` does.
 
-Quick distinction (the part everyone gets wrong):
-  --only mcp                 → deploy ALL servers in this scope's profile,
-                               but NOTHING ELSE (no skills, no instructions).
-  --select tw-review,tw-fix  → deploy ONLY those two named artifacts,
-                               filtered out of the scope's profile.
-  --only mcp --select github → deploy only the 'github' server.
+  --here                Deploy a CLI-supplied selection to the CURRENT
+                        directory via each agent's `paths.project.*`
+                        joined under cwd. Requires --select. Auto-selects
+                        agents whose capabilities serve at least one kind
+                        in the selection (or use --agent to narrow).
+
+--select is exhaustive: only the kinds derivable from the selection are
+deployed. `--select e2e-emea` (servers-only profile) writes the MCP file
+and nothing else — no instruction render, no skill symlinks. To deploy
+everything an agent has, use bare `apply` (no --select).
+
+--select takes profile names AND/OR artifact names, mixed (skills,
+subagents, prompts, servers, AND instructions are all selectable by name):
+
+  twagent apply --here --select e2e-emea
+                                          # one profile name
+  twagent apply --here --select core,tw-cucumber-to-http,github
+                                          # mix: profile + skill + server
 
 Examples:
-  twagent apply                                # sync everything
-  twagent apply --dry-run                      # preview, secrets masked
-  twagent apply --scope global:claude          # one scope only
-  twagent apply --agent claude-code            # one agent across all scopes
-  twagent apply --only skills,subagents        # only file-shaped artifacts
-  twagent apply --select bkmr-memory,tw-review # only these two artifacts
-  twagent apply --interactive                  # pick artifacts in a TUI
+  twagent apply                              # sync everything globally
+  twagent apply -n                           # preview globals, secrets masked
+  twagent apply -a claude-code               # one agent globally
+  twagent apply -s foo,bar                   # override globals with this set
+  cd ~/dev/myrepo
+  twagent apply -H -s e2e-emea               # local: deploy e2e to cwd
+  twagent apply -H -s core -a claude-code    # local, single agent
+  twagent apply -i                           # pick artifacts in a TUI
+  twagent apply -s tw-claude -i              # picker pre-checked with tw-claude
+                                             # — add/remove from there
+
+Short flags:
+  -G/--global  -H/--here  -a/--agent  -s/--select  -i/--interactive
+  -n/--dry-run -S/--show-secrets
 """
 
 
 @app.command(help=_APPLY_HELP)
 def apply(
-    scope: Optional[list[str]] = typer.Option(
-        None,
-        "--scope",
+    here: bool = typer.Option(
+        False,
+        "--here",
+        "-H",
         help=(
-            "Restrict to one or more scopes (by name). Repeatable. "
-            "Without this flag, every enabled scope runs."
+            "Local mode: deploy the --select set to the current directory "
+            "via each agent's paths.project.* joined under cwd. "
+            "Mutually exclusive with --global."
+        ),
+    ),
+    global_mode: bool = typer.Option(
+        False,
+        "--global",
+        "-G",
+        help=(
+            "Global mode (default): deploy each agent's `global_profile` to "
+            "its paths.global.* paths. Mutually exclusive with --here."
         ),
     ),
     agent: Optional[list[str]] = typer.Option(
         None,
         "--agent",
+        "-a",
         help=(
             "Restrict to one or more agents (by id, e.g. 'claude-code'). "
-            "Repeatable. Without this flag, every agent in the chosen scope(s) runs."
+            "Repeatable. In --here mode, also forces inclusion of all "
+            "capabilities the agent supports (including instructions)."
         ),
-    ),
-    only: Optional[str] = typer.Option(
-        None,
-        "--only",
-        help=(
-            "Restrict to one or more capability KINDS. "
-            "Comma-separated; allowed values: "
-            "instructions, skills, subagents, prompts, mcp. "
-            "Example: --only mcp deploys MCP servers and nothing else."
-        ),
-        metavar="KINDS",
     ),
     select: Optional[str] = typer.Option(
         None,
         "--select",
+        "-s",
         help=(
-            "Restrict to specific NAMED artifacts (skill/subagent/prompt/server "
-            "names — NOT scope or profile names). Comma-separated. "
-            "Use the keyword 'none' to deploy zero artifacts of the selectable "
-            "kinds. Example: --select bkmr-memory,github  "
-            "Run 'twagent profiles' to see what names exist."
+            "Comma-separated list of profile names AND/OR artifact names. "
+            "Each name resolves to either a profile (expanded via `extends`) "
+            "or a single artifact (skill/subagent/prompt/server). REQUIRED "
+            "in --here mode; optional in --global mode where it OVERRIDES "
+            "each agent's global_profile. "
+            "When combined with --interactive, the named items are "
+            "PRE-CHECKED in the picker — you can add or remove from there."
         ),
         metavar="NAMES|none",
     ),
@@ -220,13 +240,15 @@ def apply(
         "--interactive",
         "-i",
         help=(
-            "Open a terminal picker to choose artifacts to deploy. "
-            "Mutually exclusive with --select."
+            "Open a terminal picker to choose artifacts. "
+            "Honors --select as a pre-selection: pre-checks the named items "
+            "and lets you add or remove. Cancelling exits without deploying."
         ),
     ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
+        "-n",
         help=(
             "Show every write/symlink/render that WOULD happen, but change "
             "nothing on disk. Resolved secrets are masked unless --show-secrets."
@@ -235,6 +257,7 @@ def apply(
     show_secrets: bool = typer.Option(
         False,
         "--show-secrets",
+        "-S",
         help=(
             "Reveal resolved values from ${VAR} interpolation in --dry-run "
             "and 'diff' output. OFF by default — terminal scrollback leaks "
@@ -242,34 +265,14 @@ def apply(
         ),
     ),
 ) -> None:
-    if select is not None and interactive:
+    if here and global_mode:
         err_console.print(
-            "[red]Pick one: --select <names> OR --interactive[/red]\n"
-            "  Both flags choose which artifacts to deploy; using both at once "
-            "is ambiguous."
+            "[red]Pick one: --global OR --here[/red]\n"
+            "  --global writes to canonical agent paths; --here writes to cwd."
         )
         raise typer.Exit(2)
 
     config = _load_config()
-
-    only_list: list[str] | None = None
-    if only is not None:
-        only_list = [s.strip() for s in only.split(",") if s.strip()]
-        bad = [c for c in only_list if c not in CAPABILITIES]
-        if bad:
-            err_console.print(
-                f"[red]Unknown capability kind in --only:[/red] {', '.join(bad)}\n"
-                f"  Allowed: {', '.join(CAPABILITIES)}"
-            )
-            raise typer.Exit(2)
-        # FR-021: --select can't be used when --only restricts to instructions only
-        if select is not None and only_list == ["instructions"]:
-            err_console.print(
-                "[red]--select cannot be combined with --only instructions[/red]\n"
-                "  Instructions are template-rendered (one file per agent); "
-                "there is no list of named artifacts to pick from."
-            )
-            raise typer.Exit(2)
 
     select_list: list[str] | None = None
     if select is not None:
@@ -278,26 +281,17 @@ def apply(
         except ValueError as exc:
             err_console.print(f"[red]{exc}[/red]")
             raise typer.Exit(2)
-        # Validate names against the union of all selectable artifacts
-        available = (
-            set(config.skills)
-            | set(config.subagents)
-            | set(config.prompts)
-            | set(config.servers)
-        )
-        if select_list:
-            try:
-                validate_names(select_list, available, "artifact")
-            except ValueError as exc:
-                err_console.print(f"[red]{exc}[/red]")
-                raise typer.Exit(2)
 
     if interactive:
         if not is_interactive_terminal():
             err_console.print("[red]--interactive requires a TTY[/red]")
             raise typer.Exit(2)
         items: dict[str, str] = {}
-        for n, s in config.skills.items():
+        for n in config.profiles:
+            items[n] = "[profile]"
+        for n in config.instructions:
+            items[n] = "[instruction]"
+        for n in config.skills:
             items[n] = "[skill]"
         for n in config.subagents:
             items[n] = "[subagent]"
@@ -305,29 +299,51 @@ def apply(
             items[n] = "[prompt]"
         for n in config.servers:
             items[n] = "[mcp]"
-        chosen = select_interactive(items)
+        # When --select is also given, those names are pre-checked in the
+        # picker — twmcp's original `--profile X --interactive` pattern,
+        # generalized here to any --select <names> set.
+        preselected = set(select_list) if select_list else None
+        chosen = select_interactive(items, preselected=preselected)
         if chosen is None:
             err_console.print("Cancelled.")
             raise typer.Exit(0)
         select_list = chosen
 
-    result = run_apply(
-        config,
-        scope_filter=list(scope) if scope else None,
-        agent_filter=list(agent) if agent else None,
-        only=only_list,
-        select=select_list,
-        dry_run=dry_run,
-        show_secrets=show_secrets,
-    )
+    if here:
+        if not select_list:
+            err_console.print(
+                "[red]--here requires --select <names> (or --interactive)[/red]\n"
+                "  There is no per-cwd default profile; you must say what to deploy."
+            )
+            raise typer.Exit(2)
+        try:
+            result = apply_here(
+                config,
+                cwd=Path.cwd(),
+                select=select_list,
+                agent_filter=list(agent) if agent else None,
+                dry_run=dry_run,
+                show_secrets=show_secrets,
+            )
+        except ValueError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
+    else:
+        try:
+            result = apply_global(
+                config,
+                agent_filter=list(agent) if agent else None,
+                select=select_list,
+                dry_run=dry_run,
+                show_secrets=show_secrets,
+            )
+        except ValueError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
 
     if dry_run:
         for line in result.dry_run_log:
             typer.echo(line)
-        if result.disabled_scopes:
-            err_console.print(
-                f"\n(disabled scopes skipped: {', '.join(result.disabled_scopes)})"
-            )
 
     if result.warnings:
         for w in result.warnings:
@@ -368,6 +384,7 @@ def diff(
     show_secrets: bool = typer.Option(
         False,
         "--show-secrets",
+        "-S",
         help=(
             "Reveal resolved values from ${VAR} interpolation in the diff. "
             "OFF by default (terminal scrollback leaks secrets)."
@@ -385,31 +402,29 @@ def diff(
 
 
 _STATUS_HELP = """\
-Print every scope and its current state.
+Print every agent's global deployment state.
 
-State is one of:
-  enabled                 will run on the next 'apply'
-  disabled                turned off via 'enabled = false' in config
-  skipped (root missing)  project scope whose root directory does not exist
+For each agent: its capabilities, the profile attached as `global_profile`
+(what bare `twagent apply` will deploy), and the mcp_format. Agents with
+no `global_profile` are deployable only via `apply --here --select`.
 """
 
 
 @app.command(help=_STATUS_HELP)
 def status() -> None:
     config = _load_config()
-    table = Table(title="Scopes")
-    table.add_column("Scope")
-    table.add_column("Profile")
-    table.add_column("Agents")
-    table.add_column("State")
-    for sc in config.scopes:
-        if not sc.enabled:
-            state = "disabled"
-        elif sc.root is not None and not sc.root.exists():
-            state = f"skipped (root missing: {sc.root})"
-        else:
-            state = "enabled" + (f" (root: {sc.root})" if sc.root else "")
-        table.add_row(sc.name, sc.profile, ", ".join(sc.agents), state)
+    table = Table(title="Agents (global deployment)")
+    table.add_column("Agent")
+    table.add_column("Capabilities")
+    table.add_column("global_profile")
+    table.add_column("mcp_format")
+    for agent_id, agent in config.agents.items():
+        table.add_row(
+            agent_id,
+            ", ".join(agent.capabilities),
+            agent.global_profile or "[dim]— (no default; use --here --select)[/dim]",
+            agent.mcp_format or "—",
+        )
     console.print(table)
 
 
@@ -432,6 +447,7 @@ def agents(
     output_json: bool = typer.Option(
         False,
         "--json",
+        "-j",
         help="Emit machine-parseable JSON instead of a table. Useful in scripts.",
     ),
 ) -> None:
@@ -441,13 +457,13 @@ def agents(
             agent_id: {
                 "capabilities": list(agent.capabilities),
                 "mcp_format": agent.mcp_format,
+                "global_profile": agent.global_profile,
                 "paths_global": {
                     k: [str(p) for p in v] for k, v in agent.paths_global.items()
                 },
                 "paths_project": {
                     k: [str(p) for p in v] for k, v in agent.paths_project.items()
                 },
-                "templates": agent.templates,
             }
             for agent_id, agent in config.agents.items()
         }
@@ -458,6 +474,7 @@ def agents(
     table.add_column("Agent")
     table.add_column("Capabilities")
     table.add_column("MCP format")
+    table.add_column("global_profile")
     table.add_column("Global paths")
     for agent_id, agent in config.agents.items():
         gp_lines = "\n".join(
@@ -468,6 +485,7 @@ def agents(
             agent_id,
             ", ".join(agent.capabilities),
             agent.mcp_format or "—",
+            agent.global_profile or "—",
             gp_lines,
         )
     console.print(table)
@@ -510,19 +528,8 @@ def profiles() -> None:
     console.print(table)
 
 
-_SCOPES_HELP = """\
-List every scope with its state. Alias of 'status'.
-
-A scope is a deployment binding: it ties one profile to one or more
-agents at a location (global or under a project root). Without scopes,
-nothing gets deployed.
-"""
-
-
-@app.command(help=_SCOPES_HELP)
-def scopes() -> None:
-    # Alias of `status` (per FR-026); shares the same body to avoid drift.
-    status()
+# `scopes` command removed in v2 — scopes don't exist anymore.
+# Use `status` (per-agent global view) or `profiles` (composable bundles).
 
 
 # ─── doctor ─────────────────────────────────────────────────────────────
@@ -600,20 +607,21 @@ def extract(
 
 
 _EDIT_HELP = """\
-Open your canonical config (or an agent's instruction template) in $EDITOR.
+Open your canonical config (or an instruction template) in $EDITOR.
 
 Defaults to opening the canonical config at ~/.config/twagent/config.toml
 (or whatever --config points at). Falls back to 'vi' if $EDITOR is unset.
 
-  --init               First-time setup: create a comprehensive, commented
-                       starter config at the target path before opening it.
-  --template <agent>   Open the named agent's instruction template instead
-                       (resolved against [common] templates_dir).
+  --init                 First-time setup: create a comprehensive, commented
+                         starter config at the target path before opening it.
+  --template <name>      Open the named instruction template's source file
+                         (resolved via [instructions.<name>].source). Run
+                         `twagent profiles` or look at config to discover names.
 
 Examples:
-  twagent edit                              # open the config
-  twagent edit --init                       # bootstrap then open
-  twagent edit --template claude-code       # open Claude's instruction template
+  twagent edit                                 # open the config
+  twagent edit --init                          # bootstrap then open
+  twagent edit --template AGENT-md             # open instruction template by name
 """
 
 
@@ -631,11 +639,12 @@ def edit(
     template: Optional[str] = typer.Option(
         None,
         "--template",
+        "-t",
         help=(
-            "Open the named agent's instruction template instead of the "
-            "canonical config. Example: --template claude-code"
+            "Open the source file of an instruction registered as "
+            "[instructions.<name>]. Example: --template AGENT-md"
         ),
-        metavar="AGENT",
+        metavar="NAME",
     ),
 ) -> None:
     if init and template is not None:
@@ -644,23 +653,13 @@ def edit(
 
     if template is not None:
         config = _load_config()
-        if template not in config.agents:
-            err_console.print(f"[red]Unknown agent: {template}[/red]")
-            raise typer.Exit(2)
-        agent = config.agents[template]
-        tpl_name = agent.templates.get("instructions")
-        if not tpl_name:
+        if template not in config.instructions:
+            avail = ", ".join(sorted(config.instructions)) or "(none defined)"
             err_console.print(
-                f"[red]Agent {template} has no instructions template[/red]"
+                f"[red]Unknown instruction: {template}[/red]\n  Available: {avail}"
             )
             raise typer.Exit(2)
-        if config.common.templates_dir is None:
-            from twagent import __path__ as pkg_path
-
-            tpl_path = Path(pkg_path[0]) / "templates" / tpl_name
-        else:
-            tpl_path = config.common.templates_dir / tpl_name
-        target = tpl_path
+        target = config.instructions[template].source
     else:
         target = _OPTS.config_path
         if not target.exists():
@@ -690,21 +689,18 @@ _STUB_CONFIG = """\
 # Schema:    contracts/config-schema.md
 # Data model: data-model.md
 
-# Schema migration knob. v1 ships at 1; bump only when you upgrade twagent.
-schema_version = 1
+# Schema migration knob. v3 introduced first-class `[instructions.<name>]`
+# registry; bump only when you upgrade twagent.
+schema_version = 3
 
 # Optional dotenv loaded BEFORE ${VAR} interpolation runs against MCP env/headers.
 # Path is relative to this config file. Env vars from os.environ override dotenv.
 # env_file = "secrets.env"
 
 
-# ─── Common: shared variables + tool-wide settings ─────────────────────
-[common]
-# Override the bundled templates dir if you keep your Jinja templates elsewhere.
-# templates_dir = "~/.config/twagent/templates"
-
+# ─── Common: shared variables ───────────────────────────────────────────
 [common.vars]
-# Variables visible to ALL agents' instruction templates.
+# Variables visible to ALL instruction templates and agents.
 # Per-agent [agents.<id>.vars] overrides any key listed here.
 user_name = "you"
 work_email = "you@example.com"
@@ -712,17 +708,18 @@ work_email = "you@example.com"
 
 # ─── Agents ────────────────────────────────────────────────────────────
 # An agent has:
-#   capabilities  : subset of {instructions, skills, subagents, prompts, mcp}
-#   mcp_format    : required iff "mcp" in capabilities; one of:
-#                   claude-code | copilot-cli | pi | vscode | opencode
-#   paths.global  : per-capability list of destination paths (always a list)
-#   paths.project : same shape (instructions may be omitted)
-#   templates     : per-capability template filename (today: instructions only)
-#   vars          : per-agent Jinja context (overrides [common.vars])
+#   capabilities    : subset of {instructions, skills, subagents, prompts, mcp}
+#   mcp_format      : required iff "mcp" in capabilities; one of:
+#                     claude-code | copilot-cli | pi | vscode | opencode
+#   global_profile  : optional profile name; what bare `apply` deploys
+#   paths.global    : per-capability list of destination paths (always a list)
+#   paths.project   : same shape (used by `apply --here`); instructions may be omitted
+#   vars            : per-agent Jinja context (overrides [common.vars])
 
 [agents.claude-code]
-capabilities = ["instructions", "skills", "mcp"]
-mcp_format   = "claude-code"
+capabilities   = ["instructions", "skills", "mcp"]
+mcp_format     = "claude-code"
+global_profile = "minimal"
 
 [agents.claude-code.paths.global]
 instructions = ["~/.claude/CLAUDE.md"]
@@ -730,12 +727,9 @@ skills       = ["~/.claude/skills"]
 mcp          = ["~/.claude.json"]
 
 [agents.claude-code.paths.project]
-# When a [[scopes]] sets a `root`, project paths are joined under that root.
+# When `apply --here` runs, project paths are joined under cwd.
 skills = [".claude/skills"]
 mcp    = [".mcp.json"]
-
-[agents.claude-code.templates]
-instructions = "claude-code.md.j2"
 
 [agents.claude-code.vars]
 agent_name = "Claude"
@@ -745,8 +739,9 @@ extra_instructions = []   # template loops over this; add per-agent notes here
 # Multi-target example: deploy copilot-cli instructions to BOTH the CLI
 # location AND IntelliJ's global location at the same time.
 # [agents.copilot-cli]
-# capabilities = ["instructions", "skills", "mcp"]
-# mcp_format   = "copilot-cli"   # rewrites stdio → local in compiled JSON
+# capabilities   = ["instructions", "skills", "mcp"]
+# mcp_format     = "copilot-cli"   # rewrites stdio → local in compiled JSON
+# global_profile = "minimal"
 #
 # [agents.copilot-cli.paths.global]
 # instructions = [
@@ -760,9 +755,6 @@ extra_instructions = []   # template loops over this; add per-agent notes here
 # skills = [".github/skills"]
 # mcp    = [".mcp.json"]
 #
-# [agents.copilot-cli.templates]
-# instructions = "copilot-cli.md.j2"
-#
 # [agents.copilot-cli.vars]
 # agent_name = "Copilot"
 # extra_instructions = [
@@ -771,9 +763,14 @@ extra_instructions = []   # template loops over this; add per-agent notes here
 
 
 # ─── Artifact registries ───────────────────────────────────────────────
-# Each entry has a `source` (absolute or ~-prefixed) and optional `description`.
+# Each entry has a `source` (absolute or ~-prefixed) + optional `description`.
 # Source-missing is a warning at load time; an error in `twagent doctor` and
-# at deploy time.
+# at deploy time. Names MUST be globally unique across all 5 registries
+# (instructions, skills, subagents, prompts, servers) AND profiles.
+
+[instructions.AGENT-md]
+source      = "~/.config/twagent/templates/AGENT.md.j2"
+description = "Default instructions template (Jinja2)"
 
 [skills.bkmr-memory]
 source      = "~/dev/s/private/skills/bkmr-memory"
@@ -812,8 +809,9 @@ description = "Persistent memory via the bkmr CLI"
 # on dedup; per-type (not cross-type).
 
 [profiles.minimal]
-description = "Bare-minimum daily set"
-skills      = ["bkmr-memory"]
+description  = "Bare-minimum daily set"
+instructions = ["AGENT-md"]
+skills       = ["bkmr-memory"]
 
 # [profiles.tw]
 # extends     = ["minimal"]

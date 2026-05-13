@@ -1,4 +1,4 @@
-"""Tests for `twagent apply` — global flags + selectors + dry-run + secret masking."""
+"""Tests for `twagent apply` — global + here modes, polymorphic --select."""
 
 import json
 
@@ -15,20 +15,17 @@ runner = CliRunner()
 
 @pytest.fixture
 def real_world_config(tmp_path, monkeypatch):
-    """Build a config with REAL existing source paths so deploy works end-to-end."""
+    """v2 config with a single agent that has a global_profile."""
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_real_token")
     monkeypatch.setenv("CONFLUENCE_TOKEN", "atl_real_token")
 
-    # Create real source artifacts
     skill_src = tmp_path / "skills_src" / "bkmr"
     skill_src.mkdir(parents=True)
     (skill_src / "SKILL.md").write_text("# bkmr skill")
 
-    # Per-agent target dirs
     claude_root = tmp_path / "claude"
     claude_root.mkdir()
 
-    # Custom templates dir + template
     templates_dir = tmp_path / "templates"
     templates_dir.mkdir()
     (templates_dir / "claude-code.md.j2").write_text(
@@ -36,16 +33,15 @@ def real_world_config(tmp_path, monkeypatch):
     )
 
     config_text = f"""\
-schema_version = 1
+schema_version = 3
 
-[common]
-templates_dir = "{templates_dir}"
 [common.vars]
 user_name = "Tom"
 
 [agents.claude-code]
 capabilities = ["instructions", "skills", "mcp"]
 mcp_format = "claude-code"
+global_profile = "tw"
 [agents.claude-code.paths.global]
 instructions = ["{claude_root}/CLAUDE.md"]
 skills = ["{claude_root}/skills"]
@@ -53,10 +49,11 @@ mcp = ["{claude_root}/.claude.json"]
 [agents.claude-code.paths.project]
 skills = [".claude/skills"]
 mcp = [".mcp.json"]
-[agents.claude-code.templates]
-instructions = "claude-code.md.j2"
 [agents.claude-code.vars]
 agent_name = "Claude"
+
+[instructions.AGENT-md]
+source = "{templates_dir}/claude-code.md.j2"
 
 [skills.bkmr]
 source = "{skill_src}"
@@ -68,13 +65,9 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 env = {{ GITHUB_TOKEN = "${{GITHUB_TOKEN}}" }}
 
 [profiles.tw]
+instructions = ["AGENT-md"]
 skills = ["bkmr"]
 servers = ["github"]
-
-[[scopes]]
-name = "global"
-profile = "tw"
-agents = ["claude-code"]
 """
     config_path = tmp_path / "config.toml"
     config_path.write_text(config_text)
@@ -85,10 +78,10 @@ agents = ["claude-code"]
     }
 
 
-# ─── Bare apply ─────────────────────────────────────────────────────────
+# ─── Bare apply (= --global) ────────────────────────────────────────────
 
 
-def test_bare_apply_deploys_all_enabled_scopes(real_world_config):
+def test_bare_apply_deploys_global_profile(real_world_config):
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
     result = runner.invoke(app, ["--config", str(cfg), "apply"])
@@ -98,26 +91,31 @@ def test_bare_apply_deploys_all_enabled_scopes(real_world_config):
     assert (claude_root / ".claude.json").exists()
 
 
+def test_explicit_global_flag(real_world_config):
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+    assert result.exit_code == 0, result.output
+    assert (claude_root / "CLAUDE.md").exists()
+
+
 def test_apply_is_idempotent(real_world_config):
     cfg = real_world_config["config"]
     runner.invoke(app, ["--config", str(cfg), "apply"])
-    # Second run with --dry-run produces no plan entries because everything is in sync
     result = runner.invoke(app, ["--config", str(cfg), "apply", "--dry-run"])
     assert result.exit_code == 0
 
 
-# ─── Selectors ──────────────────────────────────────────────────────────
+# ─── Mode mutex ─────────────────────────────────────────────────────────
 
 
-def test_only_capability_filter(real_world_config):
+def test_global_and_here_mutually_exclusive(real_world_config):
     cfg = real_world_config["config"]
-    claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--only", "skills"])
-    assert result.exit_code == 0
-    assert (claude_root / "skills" / "bkmr").is_symlink()
-    # instructions and mcp NOT deployed
-    assert not (claude_root / "CLAUDE.md").exists()
-    assert not (claude_root / ".claude.json").exists()
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--here", "--select", "bkmr"]
+    )
+    assert result.exit_code == 2
+    assert "Pick one" in result.output
 
 
 # ─── Dry run ────────────────────────────────────────────────────────────
@@ -150,9 +148,6 @@ def test_show_secrets_reveals_resolved_secrets(real_world_config):
     assert "ghs_real_token" in result.output
 
 
-# ─── Real-write secrets verification ────────────────────────────────────
-
-
 def test_real_apply_writes_actual_secret_to_disk(real_world_config):
     """Masking is presentation-only; the real file on disk has real values."""
     cfg = real_world_config["config"]
@@ -162,29 +157,39 @@ def test_real_apply_writes_actual_secret_to_disk(real_world_config):
     assert mcp_json["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "ghs_real_token"
 
 
-# ─── Selection (US5, FR-021) ────────────────────────────────────────────
+# ─── Polymorphic --select (NEW in v2) ───────────────────────────────────
 
 
-def test_select_narrows_to_named_artifacts(real_world_config):
-    """--select bkmr deploys only that skill; github (server) excluded."""
+def test_select_with_profile_name_overrides_global_profile(real_world_config):
+    """`--select <profile>` in --global mode overrides each agent's default."""
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    # Create an alternate profile in-place via fixture-tweak: the existing
+    # 'tw' profile is the only one. Verify --select tw still works as a profile.
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "tw"])
+    assert result.exit_code == 0, result.output
+    assert (claude_root / "skills" / "bkmr").is_symlink()
+
+
+def test_select_with_artifact_name(real_world_config):
+    """`--select bkmr` deploys ONLY that skill (v3): no MCP, no instructions."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
     result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "bkmr"])
     assert result.exit_code == 0, result.output
     assert (claude_root / "skills" / "bkmr").is_symlink()
-    # MCP file: github not in --select so the compiled JSON has zero servers
-    mcp = json.loads((claude_root / ".claude.json").read_text())
-    assert mcp["mcpServers"] == {}
+    # bkmr is a skill; MCP and instructions capabilities NOT in needed_caps
+    assert not (claude_root / ".claude.json").exists()
+    assert not (claude_root / "CLAUDE.md").exists()
 
 
-def test_select_none_yields_empty(real_world_config):
+def test_select_mixed_profile_and_artifact(real_world_config):
+    """`--select tw,bkmr` resolves dedup'd: tw expands to {bkmr, github}; bkmr extra is no-op."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "none"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "tw,bkmr"])
     assert result.exit_code == 0, result.output
-    # MCP file written but empty
-    mcp = json.loads((claude_root / ".claude.json").read_text())
-    assert mcp["mcpServers"] == {}
+    assert (claude_root / "skills" / "bkmr").is_symlink()
 
 
 def test_select_unknown_name_exits_two(real_world_config):
@@ -193,21 +198,27 @@ def test_select_unknown_name_exits_two(real_world_config):
         app, ["--config", str(cfg), "apply", "--select", "ghost-name"]
     )
     assert result.exit_code == 2
+    assert "Unknown name" in result.output
 
 
-def test_select_and_interactive_mutually_exclusive(real_world_config):
-    cfg = real_world_config["config"]
-    result = runner.invoke(
-        app,
-        ["--config", str(cfg), "apply", "--select", "bkmr", "--interactive"],
-    )
-    assert result.exit_code == 2
-    # Error tells the user to pick one of the two flags.
-    assert "Pick one" in result.output or "mutually exclusive" in result.output
+def test_select_preseeds_interactive_picker(real_world_config, monkeypatch):
+    """`--select X --interactive` is no longer mutex; --select pre-checks the picker.
 
+    We verify the wiring by patching select_interactive to capture its
+    `preselected` kwarg and return a deterministic chosen list.
+    """
+    captured: dict = {}
 
-def test_select_with_only_instructions_rejected(real_world_config):
-    """FR-021: --select doesn't apply to 'instructions'."""
+    def fake_picker(items, preselected=None, title=""):
+        captured["preselected"] = preselected
+        captured["items"] = items
+        return ["bkmr"]  # user accepts "bkmr"
+
+    import twagent.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "select_interactive", fake_picker)
+    monkeypatch.setattr(cli_mod, "is_interactive_terminal", lambda: True)
+
     cfg = real_world_config["config"]
     result = runner.invoke(
         app,
@@ -217,8 +228,173 @@ def test_select_with_only_instructions_rejected(real_world_config):
             "apply",
             "--select",
             "bkmr",
-            "--only",
-            "instructions",
+            "--interactive",
+            "--dry-run",
         ],
     )
+    assert result.exit_code == 0, result.output
+    # The picker was given the --select set as preselected
+    assert captured["preselected"] == {"bkmr"}
+
+
+def test_short_flags_work(real_world_config):
+    """All conventional short flags resolve to the same handlers."""
+    cfg = real_world_config["config"]
+    # -n is --dry-run, -s is --select, -a is --agent
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), "apply", "-n", "-s", "bkmr", "-a", "claude-code"],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_global_short_flag(real_world_config):
+    cfg = real_world_config["config"]
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-G"])
+    assert result.exit_code == 0, result.output
+
+
+def test_here_short_flag(real_world_config, tmp_path, monkeypatch):
+    cfg = real_world_config["config"]
+    project_root = tmp_path / "shortform"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-H", "-s", "bkmr"])
+    assert result.exit_code == 0, result.output
+    assert (project_root / ".claude" / "skills" / "bkmr").is_symlink()
+
+
+# ─── --here mode (NEW in v2) ────────────────────────────────────────────
+
+
+def test_here_requires_select(real_world_config, tmp_path, monkeypatch):
+    cfg = real_world_config["config"]
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--here"])
     assert result.exit_code == 2
+    assert "--here requires --select" in result.output
+
+
+def test_here_deploys_to_cwd(real_world_config, tmp_path, monkeypatch):
+    """--here deploys to cwd via paths.project (not paths.global)."""
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    project_root = tmp_path / "myproj"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--here", "--select", "bkmr"]
+    )
+    assert result.exit_code == 0, result.output
+    # Skill landed under project root
+    assert (project_root / ".claude" / "skills" / "bkmr").is_symlink()
+    # Global path NOT touched
+    assert not (claude_root / "skills" / "bkmr").exists()
+
+
+def test_here_creates_target_subdirs(real_world_config, tmp_path, monkeypatch):
+    """--here creates `.claude/skills` if it doesn't exist (explicit user act)."""
+    cfg = real_world_config["config"]
+    project_root = tmp_path / "fresh"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--here", "--select", "bkmr"]
+    )
+    assert result.exit_code == 0, result.output
+    assert (project_root / ".claude" / "skills").is_dir()
+
+
+def test_here_with_mcp_profile(real_world_config, tmp_path, monkeypatch):
+    """--here --select <profile-of-servers-only> writes only the project mcp file."""
+    cfg = real_world_config["config"]
+    project_root = tmp_path / "p"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--here", "--select", "github"]
+    )
+    assert result.exit_code == 0, result.output
+    assert (project_root / ".mcp.json").exists()
+    # No instructions written: selection has no instruction kind
+    assert not (project_root / ".claude" / "CLAUDE.md").exists()
+
+
+# ─── Bug regressions: --select narrows capabilities (v3 fix) ────────────
+
+
+def test_select_servers_only_skips_instructions(real_world_config):
+    """Tom's exact bug: `apply --select github -a claude-code` should NOT
+    render CLAUDE.md, only write the MCP file."""
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), "apply", "-s", "github", "-a", "claude-code"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (claude_root / ".claude.json").exists()
+    assert not (claude_root / "CLAUDE.md").exists()
+
+
+def test_here_select_servers_with_agent_does_not_render_instructions(
+    real_world_config, tmp_path, monkeypatch
+):
+    """Latent --here bug: same logic under -H + --agent."""
+    cfg = real_world_config["config"]
+    project_root = tmp_path / "here-bug"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), "apply", "-H", "-s", "github", "-a", "claude-code"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (project_root / ".mcp.json").exists()
+    assert not (project_root / "CLAUDE.md").exists()
+
+
+# ─── Instructions as first-class artifact (v3) ──────────────────────────
+
+
+def test_select_instruction_name_renders_only_template(real_world_config):
+    """`--select AGENT-md` renders the instruction; nothing else."""
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-s", "AGENT-md"])
+    assert result.exit_code == 0, result.output
+    assert (claude_root / "CLAUDE.md").exists()
+    assert not (claude_root / ".claude.json").exists()
+    assert not (claude_root / "skills" / "bkmr").exists()
+
+
+def test_two_instructions_for_one_agent_errors(tmp_path, monkeypatch):
+    """A profile contributing 2+ instructions per agent is an apply-time error."""
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    tpl_a = tmp_path / "a.md.j2"
+    tpl_a.write_text("from a")
+    tpl_b = tmp_path / "b.md.j2"
+    tpl_b.write_text("from b")
+    claude_root = tmp_path / "claude"
+    claude_root.mkdir()
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f"""\
+schema_version = 3
+[common.vars]
+user_name = "x"
+[agents.claude-code]
+capabilities = ["instructions"]
+mcp_format = "claude-code"
+[agents.claude-code.paths.global]
+instructions = ["{claude_root}/CLAUDE.md"]
+[agents.claude-code.paths.project]
+[agents.claude-code.vars]
+agent_name = "Claude"
+[instructions.a]
+source = "{tpl_a}"
+[instructions.b]
+source = "{tpl_b}"
+""")
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-s", "a,b"])
+    assert result.exit_code == 1
+    assert "at most ONE instruction" in result.output

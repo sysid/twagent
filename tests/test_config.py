@@ -1,6 +1,7 @@
 """Validation matrix for config.py — one passing + one failing case per rule.
 
-Rules from contracts/config-schema.md § 'Validation rules'.
+Schema v2: scopes are gone. Global deployment is per-agent `global_profile`.
+Polymorphic --select forces a name-shadow validation rule across registries.
 """
 
 import pytest
@@ -24,7 +25,7 @@ def _write_config(tmp_path, body: str, env_file: str | None = None) -> "Configur
 
 
 MINIMAL_OK = """\
-schema_version = 1
+schema_version = 3
 
 [agents.foo]
 capabilities = []
@@ -34,11 +35,6 @@ capabilities = []
 [agents.foo.paths.project]
 
 [profiles.empty]
-
-[[scopes]]
-name = "global"
-profile = "empty"
-agents = ["foo"]
 """
 
 
@@ -47,20 +43,37 @@ agents = ["foo"]
 
 def test_minimal_valid_loads(tmp_path):
     config = _write_config(tmp_path, MINIMAL_OK)
-    assert config.schema_version == 1
+    assert config.schema_version == 3
 
 
 def test_missing_schema_version_rejected(tmp_path):
-    body = MINIMAL_OK.replace("schema_version = 1\n", "")
+    body = MINIMAL_OK.replace("schema_version = 3\n", "")
     with pytest.raises(ConfigError, match="schema_version"):
         _write_config(tmp_path, body)
 
 
 def test_future_schema_version_rejected(tmp_path):
     body = MINIMAL_OK.replace(
-        "schema_version = 1", f"schema_version = {SUPPORTED_SCHEMA_VERSION + 1}"
+        "schema_version = 3", f"schema_version = {SUPPORTED_SCHEMA_VERSION + 1}"
     )
     with pytest.raises(ConfigError, match="newer than supported"):
+        _write_config(tmp_path, body)
+
+
+# ─── Legacy [[scopes]] rejected loudly ──────────────────────────────────
+
+
+def test_legacy_scopes_blocks_rejected(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[[scopes]]
+name = "global"
+profile = "empty"
+agents = ["foo"]
+"""
+    )
+    with pytest.raises(ConfigError, match="scopes.*not supported"):
         _write_config(tmp_path, body)
 
 
@@ -78,17 +91,13 @@ def test_unknown_capability_rejected(tmp_path):
 
 def test_missing_paths_global_for_capability_rejected(tmp_path):
     body = """\
-schema_version = 1
+schema_version = 3
 [agents.foo]
 capabilities = ["skills"]
 [agents.foo.paths.global]
 [agents.foo.paths.project]
 skills = [".skills"]
 [profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["foo"]
 """
     with pytest.raises(ConfigError, match="paths.global.skills"):
         _write_config(tmp_path, body)
@@ -96,17 +105,13 @@ agents = ["foo"]
 
 def test_missing_paths_project_for_capability_rejected(tmp_path):
     body = """\
-schema_version = 1
+schema_version = 3
 [agents.foo]
 capabilities = ["skills"]
 [agents.foo.paths.global]
 skills = ["~/skills"]
 [agents.foo.paths.project]
 [profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["foo"]
 """
     with pytest.raises(ConfigError, match="paths.project.skills"):
         _write_config(tmp_path, body)
@@ -114,19 +119,13 @@ agents = ["foo"]
 
 def test_instructions_paths_project_optional(tmp_path):
     body = """\
-schema_version = 1
+schema_version = 3
 [agents.foo]
 capabilities = ["instructions"]
 [agents.foo.paths.global]
 instructions = ["~/AGENT.md"]
 [agents.foo.paths.project]
-[agents.foo.templates]
-instructions = "foo.md.j2"
 [profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["foo"]
 """
     config = _write_config(tmp_path, body)
     assert "instructions" in config.agents["foo"].capabilities
@@ -137,7 +136,7 @@ agents = ["foo"]
 
 def test_mcp_capability_requires_mcp_format(tmp_path):
     body = """\
-schema_version = 1
+schema_version = 3
 [agents.foo]
 capabilities = ["mcp"]
 [agents.foo.paths.global]
@@ -145,10 +144,6 @@ mcp = ["~/mcp.json"]
 [agents.foo.paths.project]
 mcp = [".mcp.json"]
 [profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["foo"]
 """
     with pytest.raises(ConfigError, match="mcp_format required"):
         _write_config(tmp_path, body)
@@ -156,7 +151,7 @@ agents = ["foo"]
 
 def test_unknown_mcp_format_rejected(tmp_path):
     body = """\
-schema_version = 1
+schema_version = 3
 [agents.foo]
 capabilities = ["mcp"]
 mcp_format = "bogus-format"
@@ -165,55 +160,73 @@ mcp = ["~/mcp.json"]
 [agents.foo.paths.project]
 mcp = [".mcp.json"]
 [profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["foo"]
 """
     with pytest.raises(ConfigError, match="unknown mcp_format"):
         _write_config(tmp_path, body)
 
 
-# ─── instructions template existence ────────────────────────────────────
+# ─── v3 migration: legacy fields rejected ──────────────────────────────
 
 
-def test_instructions_capability_requires_template_key(tmp_path):
-    body = """\
-schema_version = 1
-[agents.foo]
-capabilities = ["instructions"]
-[agents.foo.paths.global]
-instructions = ["~/AGENT.md"]
-[agents.foo.paths.project]
-[profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["foo"]
+def test_legacy_agent_templates_block_rejected(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[agents.foo.templates]
+instructions = "AGENT.md.j2"
 """
-    with pytest.raises(ConfigError, match="templates.instructions required"):
+    )
+    with pytest.raises(ConfigError, match="templates.*not supported"):
         _write_config(tmp_path, body)
 
 
-def test_missing_template_file_rejected(tmp_path):
-    body = f"""\
-schema_version = 1
-[common]
-templates_dir = "{tmp_path}/templates"
-[agents.foo]
-capabilities = ["instructions"]
-[agents.foo.paths.global]
-instructions = ["~/AGENT.md"]
-[agents.foo.paths.project]
-[agents.foo.templates]
-instructions = "missing.md.j2"
-[profiles.p]
-[[scopes]]
-name = "g"
-profile = "p"
-agents = ["foo"]
+def test_legacy_common_templates_dir_rejected(tmp_path):
+    body = (
+        'schema_version = 3\n[common]\ntemplates_dir = "/tmp/x"\n[common.vars]\n'
+        + MINIMAL_OK.split("schema_version = 3\n", 1)[1]
+    )
+    with pytest.raises(ConfigError, match="templates_dir.*not supported"):
+        _write_config(tmp_path, body)
+
+
+# ─── instructions registry (NEW in v3) ─────────────────────────────────
+
+
+def test_instructions_registry_loads(tmp_path):
+    tpl = tmp_path / "AGENT.md.j2"
+    tpl.write_text("hello")
+    body = (
+        MINIMAL_OK
+        + f"""
+[instructions.AGENT-md]
+source = "{tpl}"
 """
-    with pytest.raises(ConfigError, match="instructions template not found"):
+    )
+    config = _write_config(tmp_path, body)
+    assert "AGENT-md" in config.instructions
+    assert config.instructions["AGENT-md"].source == tpl
+
+
+def test_profile_referencing_unknown_instruction_rejected(tmp_path):
+    body = MINIMAL_OK.replace(
+        "[profiles.empty]\n",
+        '[profiles.empty]\ninstructions = ["ghost"]\n',
+    )
+    with pytest.raises(ConfigError, match="unknown instruction"):
+        _write_config(tmp_path, body)
+
+
+def test_instruction_and_skill_same_name_rejected(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[instructions.collide]
+source = "/tmp/x"
+[skills.collide]
+source = "/tmp/y"
+"""
+    )
+    with pytest.raises(ConfigError, match="defined both as"):
         _write_config(tmp_path, body)
 
 
@@ -323,69 +336,75 @@ def test_profile_cycle_rejected(tmp_path):
         _write_config(tmp_path, body)
 
 
-# ─── scope rules ────────────────────────────────────────────────────────
+# ─── global_profile (NEW in v2) ─────────────────────────────────────────
 
 
-def test_duplicate_scope_name_rejected(tmp_path):
-    body = (
-        MINIMAL_OK
-        + """
-[[scopes]]
-name = "global"
-profile = "empty"
-agents = ["foo"]
-enabled = false
-"""
-    )
-    with pytest.raises(ConfigError, match="duplicate name"):
-        _write_config(tmp_path, body)
-
-
-def test_unknown_scope_profile_rejected(tmp_path):
-    body = MINIMAL_OK.replace('profile = "empty"', 'profile = "ghost"')
-    with pytest.raises(ConfigError, match="unknown profile 'ghost'"):
-        _write_config(tmp_path, body)
-
-
-def test_unknown_scope_agent_rejected(tmp_path):
-    body = MINIMAL_OK.replace('agents = ["foo"]', 'agents = ["ghost"]')
-    with pytest.raises(ConfigError, match="unknown agent 'ghost'"):
-        _write_config(tmp_path, body)
-
-
-def test_empty_scope_agents_rejected(tmp_path):
-    body = MINIMAL_OK.replace('agents = ["foo"]', "agents = []")
-    with pytest.raises(ConfigError, match="non-empty"):
-        _write_config(tmp_path, body)
-
-
-def test_same_agent_in_two_enabled_scopes_rejected(tmp_path):
-    body = (
-        MINIMAL_OK
-        + """
-[[scopes]]
-name = "second"
-profile = "empty"
-agents = ["foo"]
-"""
-    )
-    with pytest.raises(ConfigError, match="two enabled scopes"):
-        _write_config(tmp_path, body)
-
-
-def test_same_agent_ok_if_one_scope_disabled(tmp_path):
-    body = (
-        MINIMAL_OK
-        + """
-[[scopes]]
-name = "second"
-profile = "empty"
-agents = ["foo"]
-enabled = false
-"""
+def test_global_profile_resolves(tmp_path):
+    body = MINIMAL_OK.replace(
+        "[agents.foo]\ncapabilities = []\n",
+        '[agents.foo]\ncapabilities = []\nglobal_profile = "empty"\n',
     )
     config = _write_config(tmp_path, body)
-    assert len(config.scopes) == 2
+    assert config.agents["foo"].global_profile == "empty"
+
+
+def test_global_profile_unknown_rejected(tmp_path):
+    body = MINIMAL_OK.replace(
+        "[agents.foo]\ncapabilities = []\n",
+        '[agents.foo]\ncapabilities = []\nglobal_profile = "ghost"\n',
+    )
+    with pytest.raises(ConfigError, match="global_profile.*not a defined profile"):
+        _write_config(tmp_path, body)
+
+
+def test_global_profile_optional(tmp_path):
+    config = _write_config(tmp_path, MINIMAL_OK)
+    assert config.agents["foo"].global_profile is None
+
+
+# ─── name shadow rule (NEW in v2) ───────────────────────────────────────
+
+
+def test_profile_and_skill_same_name_rejected(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[skills.collide]
+source = "/tmp/x"
+"""
+    )
+    body = body.replace("[profiles.empty]\n", "[profiles.empty]\n[profiles.collide]\n")
+    with pytest.raises(ConfigError, match="defined as both a profile and"):
+        _write_config(tmp_path, body)
+
+
+def test_skill_and_server_same_name_rejected(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[skills.collide]
+source = "/tmp/x"
+[servers.collide]
+type = "stdio"
+command = "noop"
+"""
+    )
+    with pytest.raises(ConfigError, match="defined both as"):
+        _write_config(tmp_path, body)
+
+
+def test_subagent_and_prompt_same_name_rejected(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[subagents.collide]
+source = "/tmp/x"
+[prompts.collide]
+source = "/tmp/y"
+"""
+    )
+    with pytest.raises(ConfigError, match="defined both as"):
+        _write_config(tmp_path, body)
 
 
 # ─── env_file ───────────────────────────────────────────────────────────
@@ -420,19 +439,16 @@ source = "/nonexistent/path"
     assert "s" in config.skills
 
 
-# ─── full sample fixture loads ──────────────────────────────────────────
+# ─── full sample fixture loads (uses fixtures_dir + GH/CONF env vars) ──
 
 
 def test_full_sample_fixture_loads(fixtures_dir, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "test")
     monkeypatch.setenv("CONFLUENCE_TOKEN", "test")
-    # sample_config has source paths in /tmp — emit warnings, do not error.
     with pytest.warns(UserWarning):
         config = load(fixtures_dir / "sample_config.toml")
-    assert config.schema_version == 1
+    assert config.schema_version == 3
     assert set(config.agents.keys()) == {"claude-code", "copilot-cli", "pi"}
     assert "tw" in config.profiles
-    assert len(config.scopes) == 3
-    # disabled scope is loaded but enabled=False
-    disabled = [s for s in config.scopes if s.name == "project:disabled"][0]
-    assert disabled.enabled is False
+    # Each agent has its global_profile attached now (no scopes).
+    assert config.agents["claude-code"].global_profile == "tw"

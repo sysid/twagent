@@ -28,7 +28,7 @@ def check(config: Configuration) -> DoctorReport:
     _check_artifact_sources(config, report)
     _check_dangling_symlinks(config, report)
     _check_capability_mismatches(config, report)
-    _check_disabled_scopes(config, report)
+    _check_agents_without_global_profile(config, report)
     logger.debug(
         "doctor.check DONE: errors=%d info=%d",
         len(report.errors),
@@ -40,6 +40,7 @@ def check(config: Configuration) -> DoctorReport:
 def _check_artifact_sources(config: Configuration, report: DoctorReport) -> None:
     logger.debug("doctor._check_artifact_sources")
     for kind, registry in (
+        ("instructions", config.instructions),
         ("skills", config.skills),
         ("subagents", config.subagents),
         ("prompts", config.prompts),
@@ -71,29 +72,38 @@ def _check_dangling_symlinks(config: Configuration, report: DoctorReport) -> Non
 
 
 def _check_capability_mismatches(config: Configuration, report: DoctorReport) -> None:
-    """Info: profile entries the agent's capabilities don't support."""
+    """Info: per-agent global_profile entries the agent's capabilities can't serve.
+
+    Schema v2: there are no scopes; mismatches are derived from each agent's
+    own `global_profile`. We expand the profile and report any kind it
+    contains that the agent doesn't have a matching capability for.
+    """
     logger.debug("doctor._check_capability_mismatches")
-    for scope in config.scopes:
-        if not scope.enabled:
+    from twagent.deploy import expand_profile  # avoid cycle
+
+    for agent_id, agent in config.agents.items():
+        if agent.global_profile is None:
             continue
-        prof = config.profiles.get(scope.profile)
-        if prof is None:
-            continue
-        for agent_id in scope.agents:
-            agent = config.agents[agent_id]
-            for kind in ("skills", "subagents", "prompts", "servers"):
-                cap_name = "mcp" if kind == "servers" else kind
-                members = getattr(prof, kind)
-                if members and cap_name not in agent.capabilities:
-                    report.info.append(
-                        f"scope {scope.name!r} agent {agent_id!r}: "
-                        f"profile lists {len(members)} {kind} but agent lacks "
-                        f"{cap_name!r} capability — silently skipped"
-                    )
+        expanded = expand_profile(config, agent.global_profile)
+        for kind, members in expanded.items():
+            cap_name = "mcp" if kind == "servers" else kind
+            if members and cap_name not in agent.capabilities:
+                report.info.append(
+                    f"agent {agent_id!r}: global_profile {agent.global_profile!r} "
+                    f"contributes {len(members)} {kind} but agent lacks "
+                    f"{cap_name!r} capability — silently skipped at apply time"
+                )
 
 
-def _check_disabled_scopes(config: Configuration, report: DoctorReport) -> None:
-    logger.debug("doctor._check_disabled_scopes")
-    for scope in config.scopes:
-        if not scope.enabled:
-            report.info.append(f"scope {scope.name!r}: disabled")
+def _check_agents_without_global_profile(
+    config: Configuration, report: DoctorReport
+) -> None:
+    """Info: agents with no `global_profile` are deployable only via --here --select."""
+    logger.debug("doctor._check_agents_without_global_profile")
+    for agent_id, agent in config.agents.items():
+        if agent.global_profile is None:
+            report.info.append(
+                f"agent {agent_id!r}: no global_profile set — bare "
+                f"`twagent apply` will skip this agent. Use --here --select "
+                f"or attach a global_profile."
+            )

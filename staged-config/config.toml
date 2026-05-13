@@ -1,0 +1,297 @@
+# twagent canonical configuration — schema v2
+# Migrated from:
+#   ~/dev/s/private/devops-binx/agent/global/vars.yaml  (render.py)
+#   ~/.config/twmcp/config.toml                          (twmcp)
+#   ~/.config/twagent/config.toml v1 (previous migration; superseded)
+#
+# v2 changes vs v1:
+#   - [[scopes]] blocks GONE. Each agent now has `global_profile = "..."`.
+#   - --scope and --only CLI flags GONE.
+#   - --select is polymorphic: accepts profile names AND artifact names, mixed.
+#   - New CLI mode: `apply --here --select <names>` for ad-hoc cwd deploys.
+
+schema_version = 2
+env_file = "secrets.env"
+
+[common]
+templates_dir = "~/.config/twagent/templates"
+
+[common.vars]
+user_name  = "Tom"
+work_email = "thomas.we.weber@gmail.com"
+style_guide = "strict engineering standards"
+working_directory = "./thoughts"
+
+
+# ─── Agents ────────────────────────────────────────────────────────────
+
+[agents.claude-code]
+capabilities   = ["instructions", "skills", "subagents", "mcp"]
+mcp_format     = "claude-code"
+global_profile = "tw-claude"
+
+[agents.claude-code.paths.global]
+instructions = ["~/.claude/CLAUDE.md"]
+skills       = ["~/dev/s/private/devops-binx/configs/claude/dot-claude/skills"]
+subagents    = ["~/.claude/agents"]
+mcp          = ["~/.claude.json"]
+
+[agents.claude-code.paths.project]
+skills    = [".claude/skills"]
+subagents = [".claude/agents"]
+mcp       = [".mcp.json"]
+
+[agents.claude-code.templates]
+instructions = "AGENT.md.j2"
+
+[agents.claude-code.vars]
+agent_name = "Claude"
+extra_instructions = []
+
+
+[agents.copilot-cli]
+capabilities   = ["instructions", "skills", "subagents", "mcp"]
+mcp_format     = "copilot-cli"
+global_profile = "tw-copilot"
+
+[agents.copilot-cli.paths.global]
+# Dual-target: devops-binx stow dir AND IntelliJ's global location.
+instructions = [
+  "~/dev/s/private/devops-binx/configs/copilot/dot-copilot/copilot-instructions.md",
+  "~/.config/github-copilot/intellij/global-copilot-instructions.md",
+]
+skills    = ["~/dev/s/private/devops-binx/configs/copilot/dot-copilot/skills"]
+subagents = ["~/.copilot/agents"]
+mcp       = ["~/.copilot/mcp-config.json"]
+
+[agents.copilot-cli.paths.project]
+skills    = [".github/skills"]
+subagents = [".github/agents"]
+mcp       = [".mcp.json"]
+
+[agents.copilot-cli.templates]
+instructions = "AGENT.md.j2"
+
+[agents.copilot-cli.vars]
+agent_name = "Copilot"
+extra_instructions = [
+  "When running commands which output more than 4KB you MUST pipe to a file and then read it from the file. There is a bug in your PTY handling (https://github.com/github/copilot-cli/issues/2182).",
+]
+
+
+[agents.pi]
+capabilities   = ["instructions", "skills", "mcp"]
+mcp_format     = "pi"
+global_profile = "tw-pi"
+
+[agents.pi.paths.global]
+instructions = ["~/.pi/agent/AGENTS.md"]
+skills       = ["~/dev/s/private/devops-binx/configs/pi/dot-pi/agent/skills"]
+mcp          = ["~/.pi/mcp.json"]
+
+[agents.pi.paths.project]
+skills = [".pi/skills"]
+mcp    = [".pi/mcp.json"]
+
+[agents.pi.templates]
+instructions = "AGENT.md.j2"
+
+[agents.pi.vars]
+agent_name = "Pi"
+extra_instructions = []
+
+
+# ─── Skill registry ────────────────────────────────────────────────────
+
+[skills.twmux]
+source = "~/dev/s/private/twmux/skill/twmux"
+[skills.skill-creator]
+source = "~/dev/s/private/devops-binx/configs/claude/dot-claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator"
+[skills.writing-clearly-and-concisely]
+source = "~/dev/s/forked/the-elements-of-style/skills/writing-clearly-and-concisely"
+[skills.bkmr-memory]
+source = "~/dev/s/public/bkmr/skill/bkmr-memory"
+[skills.tw-comprehend]
+source = "~/dev/s/private/twskls/tw-comprehend"
+[skills.tw-project-docs]
+source = "~/dev/s/private/twskls/tw-project-docs"
+[skills.tw-research-codebase]
+source = "~/dev/s/private/twskls/tw-research-codebase"
+[skills.tw-review]
+source = "~/dev/s/private/twskls/tw-review"
+[skills.tw-add-pr-review]
+source = "~/dev/s/private/twskls/tw-add-pr-review"
+[skills.tw-add-pr-comment]
+source = "~/dev/s/private/twskls/tw-add-pr-comment"
+[skills.tw-check-pr]
+source = "~/dev/s/private/twskls/tw-check-pr"
+[skills.tw-web-search]
+source = "~/dev/s/private/twskls/tw-web-search"
+[skills.tw-web-researcher]
+source = "~/dev/s/private/twskls/tw-web-researcher"
+[skills.tw-web-browser]
+source = "~/dev/s/private/twskls/tw-web-browser"
+[skills.tw-dependency-update-java]
+source = "~/dev/s/private/twskls/tw-dependency-update-java"
+[skills.tw-fix-cves]
+source = "~/dev/s/private/twskls/tw-fix-cves"
+[skills.tw-dependency-update-rust]
+source = "~/dev/s/private/twskls/tw-dependency-update-rust"
+[skills.tw-vhs-demo]
+source = "~/dev/s/private/twskls/tw-vhs-demo"
+[skills.tw-fix-grammar]
+source = "~/dev/s/private/twskls/tw-fix-grammar"
+[skills.tw-cucumber-to-http]
+source = "~/dev/s/private/twskls/tw-cucumber-to-http"
+[skills.cobra]
+source = "~/dev/s/private/devops-binx/configs/copilot/dot-copilot/skills/cobra"
+[skills.say]
+source = "~/dev/s/private/devops-binx/configs/copilot/dot-copilot/skills/say"
+[skills.code-rationale]
+source = "~/dev/bmw/copilot-customizations/skills/code-rationale"
+[skills.jira-creator]
+source = "~/dev/bmw/cdlos/ai/skills/jira-creator"
+
+
+# ─── MCP servers ────────────────────────────────────────────────────────
+
+[servers.los-mcp-local]
+type  = "sse"
+url   = "http://localhost:8113/mcp/sse"
+tools = ["*"]
+
+[servers.aws-mcp]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=${AWS_PROFILE:-XXX} uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp --metadata AWS_REGION=${AWS_REGION:-XXX}"]
+tools   = ["*"]
+
+[servers.aws-mcp-e2e-losnext-emea]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=e2e-losnext-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.eu-central-1.api.aws/mcp --metadata AWS_REGION=eu-central-1"]
+tools   = ["*"]
+
+[servers.aws-mcp-e2e-los-emea]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=e2e-los-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.eu-central-1.api.aws/mcp --metadata AWS_REGION=eu-central-1"]
+tools   = ["*"]
+
+[servers.aws-mcp-e2e-losnext-us]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=e2e-losnext-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp --metadata AWS_REGION=us-east-1"]
+tools   = ["*"]
+
+[servers.aws-mcp-e2e-los-us]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=e2e-los-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp --metadata AWS_REGION=us-east-1"]
+tools   = ["*"]
+
+[servers.aws-mcp-prod-losnext-emea]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=prod-losnext-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.eu-central-1.api.aws/mcp --metadata AWS_REGION=eu-central-1"]
+tools   = ["*"]
+
+[servers.aws-mcp-prod-los-emea]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=prod-los-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.eu-central-1.api.aws/mcp --metadata AWS_REGION=eu-central-1"]
+tools   = ["*"]
+
+[servers.aws-mcp-prod-losnext-us]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=prod-losnext-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp --metadata AWS_REGION=us-east-1"]
+tools   = ["*"]
+
+[servers.aws-mcp-prod-los-us]
+type    = "stdio"
+command = "bash"
+args    = ["-lc", "AWS_PROFILE=prod-los-admin uvx --with socksio mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp --metadata AWS_REGION=us-east-1"]
+tools   = ["*"]
+
+[servers.mcp-atlassian]
+type = "http"
+url  = "https://atc.bmwgroup.net/mcp/"
+[servers.mcp-atlassian.headers]
+X-Atlassian-Confluence-Personal-Token = "${CONFLUENCE_PAT:-XXX}"
+X-Atlassian-Confluence-Url            = "https://atc.bmwgroup.net/confluence"
+X-Atlassian-Jira-Personal-Token       = "${JIRA_PAT:-XXX}"
+X-Atlassian-Jira-Url                  = "https://atc.bmwgroup.net/jira"
+
+
+# ─── Skill profiles ────────────────────────────────────────────────────
+
+[profiles.core]
+skills = ["twmux", "skill-creator", "bkmr-memory", "tw-comprehend", "tw-project-docs", "tw-research-codebase"]
+
+[profiles.pr_review]
+skills = ["tw-review", "tw-add-pr-review", "tw-add-pr-comment", "tw-check-pr"]
+
+[profiles.web_research]
+skills = ["tw-web-search", "tw-web-researcher", "tw-web-browser"]
+
+[profiles.java]
+skills = ["tw-dependency-update-java", "tw-fix-cves"]
+
+[profiles.rust]
+skills = ["tw-dependency-update-rust"]
+
+[profiles.bmw]
+skills = ["code-rationale", "jira-creator"]
+
+[profiles.fun]
+skills = ["cobra", "say"]
+
+[profiles.claude_local]
+skills = ["tw-vhs-demo"]
+
+[profiles.writing]
+skills = ["writing-clearly-and-concisely", "tw-fix-grammar"]
+
+
+# ─── MCP-only profiles (compose into per-agent or use ad-hoc via --here --select) ─
+
+[profiles.e2e-emea]
+servers = ["aws-mcp-e2e-losnext-emea", "aws-mcp-e2e-los-emea"]
+
+[profiles.e2e-us]
+servers = ["aws-mcp-e2e-losnext-us", "aws-mcp-e2e-los-us"]
+
+[profiles.mcp-baseline]
+servers = [
+  "los-mcp-local",
+  "aws-mcp",
+  "aws-mcp-prod-losnext-emea", "aws-mcp-prod-los-emea",
+  "aws-mcp-prod-losnext-us",   "aws-mcp-prod-los-us",
+  "mcp-atlassian",
+]
+
+
+# ─── Per-agent unified profiles (referenced by global_profile = "...") ──
+
+[profiles.tw-claude]
+extends = ["core", "pr_review", "web_research", "java", "rust", "claude_local", "mcp-baseline"]
+
+[profiles.tw-copilot]
+extends = ["core", "pr_review", "web_research", "java", "rust", "bmw", "mcp-baseline"]
+
+[profiles.tw-pi]
+extends = ["core", "pr_review", "web_research", "java", "rust", "mcp-baseline"]
+
+
+# ─── No [[scopes]] ─────────────────────────────────────────────────────
+# Project-local deployment is now ad-hoc, e.g.:
+#
+#   cd ~/dev/los/los-cha
+#   twagent apply --here --select tw-claude,tw-cucumber-to-http --agent claude-code
+#   twagent apply --here --select tw-copilot,tw-cucumber-to-http --agent copilot-cli
+#
+# Switching to the e2e environment for an MCP session:
+#
+#   twagent apply --select e2e-emea               # globally swap in e2e servers
+#   twagent apply --here --select e2e-us          # locally for this repo
