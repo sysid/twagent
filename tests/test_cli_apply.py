@@ -346,6 +346,25 @@ def test_select_servers_only_skips_instructions(real_world_config):
     assert not (claude_root / "CLAUDE.md").exists()
 
 
+def test_here_warns_when_agent_has_no_project_path_for_needed_cap(
+    real_world_config, tmp_path, monkeypatch
+):
+    """Tom's scenario: `apply -s AGENT-md -a copilot-cli` where copilot-cli has
+    the `instructions` capability but no paths.project.instructions. Used to
+    silently exit 0 with no output; must now warn explicitly."""
+    cfg = real_world_config["config"]
+    project_root = tmp_path / "no-proj-instr"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), "apply", "-s", "AGENT-md", "-a", "claude-code"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "no `paths.project.instructions` configured" in result.output
+    assert "Applied" in result.output or "No-op" in result.output
+
+
 def test_here_select_servers_with_agent_does_not_render_instructions(
     real_world_config, tmp_path, monkeypatch
 ):

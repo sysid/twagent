@@ -23,6 +23,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from twagent.config import (
+    EXPANSION_KINDS,
     Agent,
     Configuration,
     FileArtifact,
@@ -76,13 +77,7 @@ def expand_profile(config: Configuration, profile_name: str) -> dict[str, list[s
     child; first occurrence wins on dedup; per-type (not cross-type).
     """
     logger.debug("deploy.expand_profile: profile=%s", profile_name)
-    out: dict[str, list[str]] = {
-        "instructions": [],
-        "skills": [],
-        "subagents": [],
-        "prompts": [],
-        "servers": [],
-    }
+    out: dict[str, list[str]] = {kind: [] for kind in EXPANSION_KINDS}
     visited: set[str] = set()
 
     def _walk(name: str) -> None:
@@ -328,6 +323,7 @@ def apply_global(
 
     for agent_id, agent in config.agents.items():
         if agent_filter and agent_id not in agent_filter:
+            logger.debug("deploy.apply_global: agent %s excluded by --agent filter", agent_id)
             continue
 
         if selection_override is not None:
@@ -335,27 +331,41 @@ def apply_global(
         elif agent.global_profile is not None:
             expanded = expand_profile(config, agent.global_profile)
         else:
-            logger.debug(
-                "deploy.apply_global: agent %s has no global_profile and no "
-                "--select override; skipping",
-                agent_id,
+            msg = (
+                f"{agent_id}: no global_profile set and no --select override — skipped."
             )
+            logger.debug("deploy.apply_global: %s", msg)
+            if agent_filter and agent_id in agent_filter:
+                result.warnings.append(msg)
             continue
 
-        # When --select overrides, restrict deployed capabilities to those
-        # the selection actually touches. Bare apply (no select) keeps the
-        # full agent.capabilities iteration → renders instructions if
-        # global_profile lists one, etc.
         if selection_override is not None:
             allowed_caps = _needed_capabilities(expanded)
             cap_iter = [c for c in agent.capabilities if c in allowed_caps]
         else:
             cap_iter = list(agent.capabilities)
+        logger.debug(
+            "deploy.apply_global: agent=%s caps_to_deploy=%s",
+            agent_id,
+            cap_iter,
+        )
 
         for capability in cap_iter:
             targets = _global_targets(agent, capability)
             if not targets:
+                logger.debug(
+                    "deploy.apply_global: agent=%s cap=%s has no paths.global.%s; skipping",
+                    agent_id,
+                    capability,
+                    capability,
+                )
                 continue
+            logger.debug(
+                "deploy.apply_global: deploying agent=%s cap=%s targets=%d",
+                agent_id,
+                capability,
+                len(targets),
+            )
             _apply_one(
                 config,
                 agent,
@@ -410,23 +420,44 @@ def apply_here(
 
     for agent_id, agent in config.agents.items():
         if agent_filter and agent_id not in agent_filter:
+            logger.debug("deploy.apply_here: agent %s excluded by --agent filter", agent_id)
             continue
         if not needed_caps & set(agent.capabilities):
-            logger.debug(
-                "deploy.apply_here: agent %s capabilities %s do not intersect "
-                "selection kinds %s; skipping",
-                agent_id,
-                list(agent.capabilities),
-                needed_caps,
+            msg = (
+                f"{agent_id}: capabilities {list(agent.capabilities)} do not "
+                f"intersect selection kinds {sorted(needed_caps)} — skipped."
             )
+            logger.debug("deploy.apply_here: %s", msg)
+            # User-visible only if they explicitly asked for this agent.
+            if agent_filter and agent_id in agent_filter:
+                result.warnings.append(msg)
             continue
 
         for capability in agent.capabilities:
             if capability not in needed_caps:
+                logger.debug(
+                    "deploy.apply_here: agent %s capability %s not in needed_caps %s; skipping",
+                    agent_id,
+                    capability,
+                    sorted(needed_caps),
+                )
                 continue
             targets = _project_targets(agent, capability, cwd)
             if not targets:
+                msg = (
+                    f"{agent_id}/{capability}: no `paths.project.{capability}` "
+                    f"configured — selection won't deploy under cwd. "
+                    f"Add it under [agents.{agent_id}.paths.project], or use --global."
+                )
+                logger.debug("deploy.apply_here: %s", msg)
+                result.warnings.append(msg)
                 continue
+            logger.debug(
+                "deploy.apply_here: deploying agent=%s cap=%s targets=%d",
+                agent_id,
+                capability,
+                len(targets),
+            )
             _apply_one(
                 config,
                 agent,

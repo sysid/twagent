@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 from simple_term_menu import TerminalMenu
 
+from twagent.config import EXPANSION_KINDS
+
 if TYPE_CHECKING:
     from twagent.config import Configuration
 
@@ -100,13 +102,7 @@ def resolve_selection(
     logger.debug("selector.resolve_selection: names=%s", names)
     from twagent.deploy import expand_profile  # local import: avoid cycle
 
-    out: dict[str, list[str]] = {
-        "instructions": [],
-        "skills": [],
-        "subagents": [],
-        "prompts": [],
-        "servers": [],
-    }
+    out: dict[str, list[str]] = {kind: [] for kind in EXPANSION_KINDS}
 
     artifact_kind_of: dict[str, str] = {}
     for kind in out:

@@ -29,6 +29,17 @@ logger = logging.getLogger(__name__)
 SUPPORTED_SCHEMA_VERSION = 3
 
 CAPABILITIES = ("instructions", "skills", "subagents", "prompts", "mcp")
+
+# Keys of the profile-expansion dict returned by `expand_profile` /
+# `resolve_selection`. Differs from CAPABILITIES: "mcp" (capability) ↔
+# "servers" (artifact registry name).
+EXPANSION_KINDS: tuple[str, ...] = (
+    "instructions",
+    "skills",
+    "subagents",
+    "prompts",
+    "servers",
+)
 Capability = Literal["instructions", "skills", "subagents", "prompts", "mcp"]
 
 MCP_FORMATS = ("claude-code", "copilot-cli", "pi", "vscode", "opencode")

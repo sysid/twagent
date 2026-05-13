@@ -222,6 +222,167 @@ Headlines (v3 schema):
   selection touches. Bare `apply` (no `--select`) deploys everything in
   the agent's `global_profile`.
 
+## Configuration (`config.toml`)
+
+The canonical config lives at `~/.config/twagent/config.toml`. It has six top-level
+sections, all keyed by name. Names are **globally unique across all artifact registries**
+(the "shadow rule").
+
+| Section | Purpose |
+|---|---|
+| `schema_version` | Required. Currently `3`. |
+| `env_file` | Optional. Path (relative to the config) to a dotenv file used for `${VAR}` interpolation. |
+| `[common.vars]` | Jinja vars shared across agents (overlaid by per-agent vars). |
+| `[agents.<id>]` | An agent: capabilities, MCP format, deploy paths, vars, default global profile. |
+| `[instructions.<name>]` | Jinja2 instruction template (first-class artifact in v3). |
+| `[skills.<name>]` `[subagents.<name>]` `[prompts.<name>]` | File artifacts (symlinked into per-agent dirs). |
+| `[servers.<name>]` | MCP server definition (compiled per `mcp_format`). |
+| `[profiles.<name>]` | Bundles of artifact names; composable via `extends`. |
+
+### Field reference
+
+**Agent** (`[agents.<id>]`):
+- `capabilities`: subset of `["instructions", "skills", "subagents", "prompts", "mcp"]`.
+- `mcp_format`: translator key — `claude-code` | `copilot-cli` | `pi`. Required if `mcp` is in capabilities.
+- `global_profile`: profile name deployed by `twagent apply --global`.
+- `paths.global.<kind>`: list of canonical destination paths (per capability).
+- `paths.project.<kind>`: list of cwd-relative destinations used by `apply --here`.
+- `vars`: Jinja vars layered over `[common.vars]`.
+
+**File artifact** (`[skills.<name>]`, `[subagents.<name>]`, `[prompts.<name>]`, `[instructions.<name>]`):
+- `source`: absolute path to the file or directory.
+- `description`: optional.
+
+**Server** (`[servers.<name>]`):
+- `type`: `stdio` (default) or `http`.
+- stdio: `command`, `args`, `env` (supports `${VAR:-default}`).
+- http: `url`, `tools`, `[servers.<name>.headers]` (supports `${VAR}`).
+
+**Profile** (`[profiles.<name>]`):
+- `extends`: list of parent profile names. Depth-first, parent-first, first-occurrence wins on collisions.
+- `instructions`, `skills`, `subagents`, `prompts`, `servers`: lists of artifact names.
+
+### Example
+
+```toml
+schema_version = 3
+env_file = "secrets.env"
+
+[common.vars]
+user_name  = "Tom"
+work_email = "tom@example.com"
+
+# ─── Agents ─────────────────────────────────────────────────────────────
+[agents.claude-code]
+capabilities   = ["instructions", "skills", "subagents", "mcp"]
+mcp_format     = "claude-code"
+global_profile = "tw"
+
+[agents.claude-code.paths.global]
+instructions = ["~/.claude/CLAUDE.md"]
+skills       = ["~/.claude/skills"]
+subagents    = ["~/.claude/agents"]
+mcp          = ["~/.claude.json"]
+
+[agents.claude-code.paths.project]
+skills    = [".claude/skills"]
+subagents = [".claude/agents"]
+mcp       = [".mcp.json"]
+
+[agents.claude-code.vars]
+agent_name = "Claude"
+
+[agents.copilot-cli]
+capabilities   = ["instructions", "skills", "subagents", "mcp"]
+mcp_format     = "copilot-cli"
+global_profile = "tw"
+
+[agents.copilot-cli.paths.global]
+instructions = ["~/.copilot/copilot-instructions.md"]
+skills       = ["~/.copilot/skills"]
+subagents    = ["~/.copilot/agents"]
+mcp          = ["~/.copilot/mcp-config.json"]
+
+[agents.copilot-cli.paths.project]
+skills    = [".github/skills"]
+subagents = [".github/agents"]
+mcp       = [".github/copilot/mcp.json"]
+
+[agents.copilot-cli.vars]
+agent_name = "Copilot"
+
+[agents.pi]
+capabilities   = ["instructions", "skills", "mcp"]
+mcp_format     = "pi"
+global_profile = "minimal"
+
+[agents.pi.paths.global]
+instructions = ["~/.pi/agent/AGENTS.md"]
+skills       = ["~/.pi/agent/skills"]
+mcp          = ["~/.pi/mcp.json"]
+
+[agents.pi.paths.project]
+skills = [".pi/skills"]
+mcp    = [".pi/mcp.json"]
+
+[agents.pi.vars]
+agent_name = "Pi"
+
+# ─── Instructions (Jinja2 templates) ───────────────────────────────────
+[instructions.AGENT-md]
+source = "~/.config/twagent/templates/AGENT.md.j2"
+
+# ─── File artifacts ─────────────────────────────────────────────────────
+[skills.bkmr-memory]
+source      = "~/dev/skills/bkmr-memory"
+description = "Persistent memory via bkmr CLI"
+
+[skills.tw-review]
+source = "~/dev/skills/tw-review"
+
+[subagents.code-reviewer]
+source = "~/dev/agents/code-reviewer.md"
+
+[prompts.adr]
+source = "~/dev/prompts/adr.prompt.md"
+
+# ─── MCP servers ────────────────────────────────────────────────────────
+[servers.github]
+type    = "stdio"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-github"]
+env     = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+
+[servers.atlassian]
+type  = "http"
+url   = "https://example.com/mcp/"
+tools = ["*"]
+[servers.atlassian.headers]
+X-Atlassian-Token = "${CONFLUENCE_TOKEN}"
+X-Atlassian-Url   = "https://example.com/confluence"
+
+# ─── Profiles ───────────────────────────────────────────────────────────
+[profiles.minimal]
+description  = "Bare-minimum daily set"
+instructions = ["AGENT-md"]
+skills       = ["bkmr-memory"]
+servers      = ["github"]
+
+[profiles.tw]
+extends      = ["minimal"]
+description  = "Tom's default loadout"
+skills       = ["tw-review"]
+subagents    = ["code-reviewer"]
+prompts      = ["adr"]
+servers      = ["atlassian"]
+```
+
+### Interpolation & secrets
+
+- `${VAR}` and `${VAR:-default}` resolve inside `servers.*.env` and `servers.*.headers` only.
+- Sources are `os.environ` plus the dotenv at `env_file`.
+- Secrets are **masked by default** in `apply -n` / `diff` output. Use `-S` / `--show-secrets` to reveal.
+
 ## Install
 
 ```bash

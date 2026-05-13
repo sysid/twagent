@@ -78,7 +78,7 @@ def _diff_one(
     if not targets:
         return
     if cap == "instructions":
-        _diff_instructions(config, agent, targets, report)
+        _diff_instructions(config, agent, expanded, targets, report)
     elif cap in ("skills", "subagents", "prompts"):
         _diff_links(config, agent, cap, expanded, targets, report)
     elif cap == "mcp":
@@ -92,18 +92,18 @@ def _diff_one(
         )
 
 
-def _diff_instructions(config, agent, targets, report):
-    template_name = agent.templates.get("instructions")
-    if not template_name:
+def _diff_instructions(
+    config: Configuration,
+    agent: Agent,
+    expanded: dict[str, list[str]],
+    targets: list[Path],
+    report: DiffReport,
+) -> None:
+    members = expanded.get("instructions", [])
+    if not members or members[0] not in config.instructions:
         return
-    if config.common.templates_dir is None:
-        from twagent import __path__ as pkg_path
-
-        templates_dir = Path(pkg_path[0]) / "templates"
-    else:
-        templates_dir = config.common.templates_dir
-    tpl = templates_dir / template_name
-    intended = render_template(tpl, config.common.vars, agent.vars)
+    tpl_path = config.instructions[members[0]].source
+    intended = render_template(tpl_path, config.common.vars, agent.vars)
     for target in targets:
         current = target.read_text() if target.exists() else ""
         if current != intended:

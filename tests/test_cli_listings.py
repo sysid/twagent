@@ -95,3 +95,142 @@ def test_profiles_shows_extends_expansion(listings_config):
     assert "full" in result.output
     # full extends base, so full's expanded skills should include x
     assert "x" in result.output
+
+
+# ─── artefacts command ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def artefacts_config(tmp_path):
+    """Config exercising all five registries."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "instr.j2").write_text("hi {{ user_name }}")
+    (src / "bkmr-skill").mkdir()
+    (src / "reviewer").mkdir()
+    (src / "release.md").write_text("# release")
+    config_text = f"""\
+schema_version = 3
+[common.vars]
+user_name = "tom"
+
+[agents.claude-code]
+capabilities = ["instructions", "skills", "subagents", "prompts", "mcp"]
+mcp_format = "claude-code"
+[agents.claude-code.paths.global]
+instructions = ["~/.claude/CLAUDE.md"]
+skills = ["~/.claude/skills"]
+subagents = ["~/.claude/subagents"]
+prompts = ["~/.claude/prompts"]
+mcp = ["~/.claude.json"]
+[agents.claude-code.paths.project]
+skills = [".claude/skills"]
+subagents = [".claude/subagents"]
+prompts = [".claude/prompts"]
+mcp = [".mcp.json"]
+[agents.claude-code.vars]
+agent_name = "Claude"
+
+[instructions.AGENT-md]
+source = "{src}/instr.j2"
+description = "Top-level agent instructions"
+
+[skills.bkmr]
+source = "{src}/bkmr-skill"
+description = "Bookmark manager skill"
+
+[subagents.reviewer]
+source = "{src}/reviewer"
+
+[prompts.release]
+source = "{src}/release.md"
+description = "Release prompt"
+
+[servers.github]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = {{ GITHUB_TOKEN = "${{GITHUB_TOKEN}}" }}
+"""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(config_text)
+    return cfg
+
+
+def test_artefacts_lists_all_registries(artefacts_config, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    result = runner.invoke(app, ["--config", str(artefacts_config), "artefacts"])
+    assert result.exit_code == 0, result.output
+    for name in ("AGENT-md", "bkmr", "reviewer", "release", "github"):
+        assert name in result.output, f"{name} missing from listing"
+
+
+def test_artefacts_filter_skills_excludes_others(artefacts_config, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    result = runner.invoke(
+        app, ["--config", str(artefacts_config), "artefacts", "--skills"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "bkmr" in result.output
+    assert "AGENT-md" not in result.output
+    assert "github" not in result.output
+
+
+def test_artefacts_multi_filter_combines(artefacts_config, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    result = runner.invoke(
+        app,
+        ["--config", str(artefacts_config), "artefacts", "--skills", "--servers"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "bkmr" in result.output
+    assert "github" in result.output
+    assert "AGENT-md" not in result.output
+
+
+def test_artefacts_detail_for_file_artefact(artefacts_config, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    monkeypatch.setenv("COLUMNS", "200")  # avoid Rich truncating the source path
+    result = runner.invoke(
+        app, ["--config", str(artefacts_config), "artefacts", "bkmr"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "bkmr" in result.output
+    assert "skills" in result.output  # kind shown
+    assert "Bookmark manager skill" in result.output
+    assert "bkmr-skill" in result.output  # source path
+
+
+def test_artefacts_detail_for_server_shows_command_and_env_keys(
+    artefacts_config, monkeypatch
+):
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    result = runner.invoke(
+        app, ["--config", str(artefacts_config), "artefacts", "github"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "github" in result.output
+    assert "stdio" in result.output
+    assert "npx" in result.output
+    # env keys shown but token value masked (mirrors apply --dry-run convention)
+    assert "GITHUB_TOKEN" in result.output
+
+
+def test_artefacts_unknown_name_exits_two(artefacts_config, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    result = runner.invoke(
+        app, ["--config", str(artefacts_config), "artefacts", "no-such-thing"]
+    )
+    assert result.exit_code == 2
+    assert "no-such-thing" in result.output or "Unknown" in result.output
+
+
+def test_artefacts_detail_respects_filter(artefacts_config, monkeypatch):
+    """A name that exists but is the wrong kind under an active filter must miss."""
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    # github is a server; --skills only → not found
+    result = runner.invoke(
+        app,
+        ["--config", str(artefacts_config), "artefacts", "github", "--skills"],
+    )
+    assert result.exit_code == 2

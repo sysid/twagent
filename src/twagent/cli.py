@@ -63,8 +63,6 @@ app = typer.Typer(
 console = Console()
 err_console = Console(stderr=True)
 
-CAPABILITIES = ("instructions", "skills", "subagents", "prompts", "mcp")
-
 
 # ─── Global options ─────────────────────────────────────────────────────
 
@@ -352,18 +350,43 @@ def apply(
             typer.echo(line)
 
     if result.warnings:
-        for w in result.warnings:
-            err_console.print(f"[yellow]Warning:[/yellow] {w}")
+        from rich.markup import escape
 
-    if not dry_run and _OPTS.verbose:
+        for w in result.warnings:
+            err_console.print(f"[yellow]Warning:[/yellow] {escape(w)}")
+
+    if not dry_run and result.written:
+        from rich.markup import escape
+
+        err_console.print("[green]Wrote:[/green]")
         for path in result.written:
-            err_console.print(path)
+            err_console.print(f"  {escape(path)}")
 
     if result.has_errors:
+        from rich.markup import escape
+
         err_console.print("\n[red]Errors:[/red]")
         for err in result.errors:
-            err_console.print(f"  {err}")
+            err_console.print(f"  {escape(err)}")
         raise typer.Exit(1)
+
+    # Always emit a one-line outcome so silent success is impossible.
+    # `apply_here`/`apply_global` may have skipped every agent — the user
+    # needs to see that, not stare at an empty terminal.
+    mode = "dry-run" if dry_run else ("here" if here else "global")
+    n_written = len(result.dry_run_log) if dry_run else len(result.written)
+    label = "would change" if dry_run else "written"
+    summary = (
+        f"[green]Applied[/green] ({mode}): {n_written} {label}, "
+        f"{len(result.warnings)} warning(s), {len(result.errors)} error(s)."
+    )
+    if n_written == 0 and not result.warnings and not result.errors:
+        summary = (
+            f"[yellow]No-op[/yellow] ({mode}): nothing to deploy. "
+            f"Check `twagent agents` for paths.project.* coverage, "
+            f"or re-run with --global / -v for details."
+        )
+    err_console.print(summary)
 
 
 # ─── diff ───────────────────────────────────────────────────────────────
@@ -536,6 +559,122 @@ def profiles() -> None:
 
 # `scopes` command removed in v2 — scopes don't exist anymore.
 # Use `status` (per-agent global view) or `profiles` (composable bundles).
+
+
+# ─── artefacts ──────────────────────────────────────────────────────────
+
+
+_ARTEFACTS_HELP = """\
+List or inspect registered artefacts.
+
+Artefacts live in five registries: instructions, skills, subagents, prompts,
+and servers. Use this command to discover the NAMES you'd pass to
+`apply --select`, or to look up where an artefact's source lives.
+
+  twagent artefacts                       # list every artefact, all kinds
+  twagent artefacts bkmr                  # details for one artefact by name
+  twagent artefacts --skills              # restrict to skills
+  twagent artefacts --skills --servers    # multiple filters combine (OR)
+"""
+
+
+# Kind → registry attribute. Excludes the per-kind capability/registry
+# split; for artefacts the registry name IS the kind name.
+_ARTEFACT_KINDS: tuple[str, ...] = (
+    "instructions",
+    "skills",
+    "subagents",
+    "prompts",
+    "servers",
+)
+
+
+@app.command(help=_ARTEFACTS_HELP)
+def artefacts(
+    name: Optional[str] = typer.Argument(
+        None,
+        help="If given, print details for this artefact instead of listing.",
+    ),
+    instructions: bool = typer.Option(False, "--instructions"),
+    skills: bool = typer.Option(False, "--skills"),
+    subagents: bool = typer.Option(False, "--subagents"),
+    prompts: bool = typer.Option(False, "--prompts"),
+    servers: bool = typer.Option(False, "--servers"),
+) -> None:
+    config = _load_config()
+    filters = {
+        "instructions": instructions,
+        "skills": skills,
+        "subagents": subagents,
+        "prompts": prompts,
+        "servers": servers,
+    }
+    kinds = (
+        [k for k, on in filters.items() if on]
+        if any(filters.values())
+        else list(_ARTEFACT_KINDS)
+    )
+
+    if name is not None:
+        for kind in kinds:
+            registry = getattr(config, kind)
+            if name in registry:
+                _print_artefact_details(kind, registry[name])
+                return
+        err_console.print(f"[red]Unknown artefact:[/red] {name!r}")
+        all_in_scope = sorted({n for k in kinds for n in getattr(config, k)})
+        if all_in_scope:
+            err_console.print(
+                f"  Available in {', '.join(kinds)}: {', '.join(all_in_scope)}"
+            )
+        raise typer.Exit(2)
+
+    table = Table(title="Artefacts")
+    table.add_column("Kind")
+    table.add_column("Name")
+    table.add_column("Source / Type")
+    table.add_column("Description")
+    for kind in kinds:
+        for art_name, item in getattr(config, kind).items():
+            if kind == "servers":
+                src_or_type = item.type + (
+                    f" ({item.command})" if item.command else ""
+                )
+                desc = "—"
+            else:
+                src_or_type = str(item.source)
+                desc = item.description or "—"
+            table.add_row(kind, art_name, src_or_type, desc)
+    console.print(table)
+
+
+def _print_artefact_details(kind: str, item) -> None:
+    """Print all relevant fields of a single artefact to stdout."""
+    table = Table(title=f"{kind}.{item.name}")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("kind", kind)
+    table.add_row("name", item.name)
+    if kind == "servers":
+        table.add_row("type", item.type)
+        if item.command:
+            table.add_row("command", item.command)
+        if item.args:
+            table.add_row("args", " ".join(item.args))
+        if item.url:
+            table.add_row("url", item.url)
+        if item.tools:
+            table.add_row("tools", ", ".join(item.tools))
+        if item.env:
+            # Show keys only — values may be ${VAR}-interpolated secrets.
+            table.add_row("env (keys)", ", ".join(item.env))
+        if item.headers:
+            table.add_row("headers (keys)", ", ".join(item.headers))
+    else:
+        table.add_row("source", str(item.source))
+        if item.description:
+            table.add_row("description", item.description)
+    console.print(table)
 
 
 # ─── doctor ─────────────────────────────────────────────────────────────
