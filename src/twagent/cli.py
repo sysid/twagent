@@ -38,21 +38,21 @@ Claude Code, Copilot CLI, Pi, and friends from a single canonical TOML.
 
   Edit config       :  twagent edit                (or 'edit --init' first time)
   See what's loaded :  twagent agents | profiles | status
-  Preview globals   :  twagent apply --dry-run     (secrets masked by default)
-  Deploy globally   :  twagent apply               (uses each agent's global_profile)
-  Deploy locally    :  twagent apply --here --select <names>
+  Preview locals    :  twagent apply --select <names> --dry-run
+  Deploy locally    :  twagent apply --select <names>   (default: --here)
+  Deploy globally   :  twagent apply --global           (each agent's global_profile)
   See what changed  :  twagent diff
   Find drift        :  twagent doctor
 
 Glossary:
   agent    An AI assistant target with capabilities + paths + a default
-           profile (`global_profile`). bare `apply` deploys this profile.
+           profile (`global_profile`). `apply --global` deploys this profile.
   profile  A reusable bundle of artifact references (skills/subagents/
            prompts/MCP servers). Profiles can `extends` other profiles.
   artifact A single skill/subagent/prompt/MCP server, registered by name.
 
   --select takes a mix of profile names AND artifact names.
-  --global vs --here: write to canonical agent paths vs cwd.
+  --here (default) vs --global: write to cwd vs canonical agent paths.
 """
 
 app = typer.Typer(
@@ -148,15 +148,16 @@ Deploy your resolved configuration to disk.
 
 Two modes:
 
-  --global   (default)  Deploy each agent's `global_profile` to its
-                        `paths.global.*` paths (~/.claude/, ~/.copilot/, ...).
-                        Idempotent. This is what bare `twagent apply` does.
-
-  --here                Deploy a CLI-supplied selection to the CURRENT
+  --here     (default)  Deploy a CLI-supplied selection to the CURRENT
                         directory via each agent's `paths.project.*`
                         joined under cwd. Requires --select. Auto-selects
                         agents whose capabilities serve at least one kind
-                        in the selection (or use --agent to narrow).
+                        in the selection (or use --agent to narrow). This
+                        is what bare `twagent apply --select <names>` does.
+
+  --global              Deploy each agent's `global_profile` to its
+                        `paths.global.*` paths (~/.claude/, ~/.copilot/, ...).
+                        Idempotent.
 
 --select is exhaustive: only the kinds derivable from the selection are
 deployed. `--select e2e-emea` (servers-only profile) writes the MCP file
@@ -172,16 +173,17 @@ subagents, prompts, servers, AND instructions are all selectable by name):
                                           # mix: profile + skill + server
 
 Examples:
-  twagent apply                              # sync everything globally
-  twagent apply -n                           # preview globals, secrets masked
-  twagent apply -a claude-code               # one agent globally
-  twagent apply -s foo,bar                   # override globals with this set
   cd ~/dev/myrepo
-  twagent apply -H -s e2e-emea               # local: deploy e2e to cwd
-  twagent apply -H -s core -a claude-code    # local, single agent
-  twagent apply -i                           # pick artifacts in a TUI
+  twagent apply -s e2e-emea                  # local (default): deploy to cwd
+  twagent apply -s core -a claude-code       # local, single agent
+  twagent apply -s foo,bar -n                # preview local deploy, masked
+  twagent apply -i                           # pick artifacts in a TUI (local)
   twagent apply -s tw-claude -i              # picker pre-checked with tw-claude
                                              # — add/remove from there
+  twagent apply --global                     # sync everything globally
+  twagent apply --global -n                  # preview globals, secrets masked
+  twagent apply --global -a claude-code      # one agent globally
+  twagent apply --global -s foo,bar          # override globals with this set
 
 Short flags:
   -G/--global  -H/--here  -a/--agent  -s/--select  -i/--interactive
@@ -196,9 +198,10 @@ def apply(
         "--here",
         "-H",
         help=(
-            "Local mode: deploy the --select set to the current directory "
-            "via each agent's paths.project.* joined under cwd. "
-            "Mutually exclusive with --global."
+            "Local mode (default): deploy the --select set to the current "
+            "directory via each agent's paths.project.* joined under cwd. "
+            "Mutually exclusive with --global. This is the default — pass "
+            "explicitly only for clarity."
         ),
     ),
     global_mode: bool = typer.Option(
@@ -206,8 +209,8 @@ def apply(
         "--global",
         "-G",
         help=(
-            "Global mode (default): deploy each agent's `global_profile` to "
-            "its paths.global.* paths. Mutually exclusive with --here."
+            "Global mode: deploy each agent's `global_profile` to its "
+            "paths.global.* paths. Mutually exclusive with --here."
         ),
     ),
     agent: Optional[list[str]] = typer.Option(
@@ -228,8 +231,8 @@ def apply(
             "Comma-separated list of profile names AND/OR artifact names. "
             "Each name resolves to either a profile (expanded via `extends`) "
             "or a single artifact (skill/subagent/prompt/server). REQUIRED "
-            "in --here mode; optional in --global mode where it OVERRIDES "
-            "each agent's global_profile. "
+            "in --here mode (the default); optional in --global mode where "
+            "it OVERRIDES each agent's global_profile. "
             "When combined with --interactive, the named items are "
             "PRE-CHECKED in the picker — you can add or remove from there."
         ),
@@ -271,6 +274,9 @@ def apply(
             "  --global writes to canonical agent paths; --here writes to cwd."
         )
         raise typer.Exit(2)
+
+    # --here is the default. Only enter global mode when --global is set.
+    here = not global_mode
 
     config = _load_config()
 

@@ -18,9 +18,9 @@ prompts, MCP servers — plus the agents that consume them and the profiles
 that bundle them. Then:
 
 ```sh
-twagent apply                                    # global sync
-twagent apply --here --select tw-claude          # ad-hoc local deploy
-twagent apply -s e2e-emea -a copilot-cli         # swap MCP env for one agent
+twagent apply --select tw-claude                 # local deploy to cwd (default)
+twagent apply --global                           # global sync
+twagent apply --global -s e2e-emea -a copilot-cli  # swap MCP env for one agent
 ```
 
 twagent renders per-agent instruction files (Jinja2), symlinks file artifacts
@@ -31,7 +31,7 @@ into each agent's expected JSON shape.
 
 ```
   ┌──────────────┐    ┌─────────────┐
-  │  Registries  │ →  │   Profiles  │ →  apply (--global | --here)
+  │  Registries  │ →  │   Profiles  │ →  apply (--here | --global)
   │              │    │  (composable│        │
   │ instructions │    │   bundles)  │        ▼
   │ skills       │    │             │   per-agent paths
@@ -45,7 +45,7 @@ into each agent's expected JSON shape.
 - **Profiles** bundle artifacts (skills, subagents, prompts, instructions,
   servers) and compose via `extends`.
 - **Agents** declare which capabilities they support and where their files go.
-  Each agent has an optional `global_profile` — what bare `apply` deploys.
+  Each agent has an optional `global_profile` — what `apply --global` deploys.
 - **`--select`** is polymorphic: it accepts profile names AND artifact names,
   mixed. It's exhaustive — only the kinds derivable from the selection deploy.
 
@@ -62,9 +62,11 @@ twagent agents                    # capabilities + global_profile + paths
 twagent profiles                  # extends-expanded contents per profile
 twagent status                    # per-agent global deployment view
 
-# Preview, then deploy
-twagent apply -n                  # dry-run, secrets masked
-twagent apply                     # do it
+# Preview, then deploy (--here is the default; --select is required)
+twagent apply -s tw-claude -n     # dry-run, secrets masked
+twagent apply -s tw-claude        # do it (local, into cwd)
+twagent apply --global -n         # preview global deploy
+twagent apply --global            # global deploy
 
 # Maintenance
 twagent diff                      # what diverges from config?
@@ -77,16 +79,16 @@ The deploy command is the surface area. Two modes:
 
 | Mode | Default | What it writes |
 |---|---|---|
-| `--global` (default, `-G`) | yes | Each agent's `global_profile`, to canonical paths (`~/.claude/...`, `~/.copilot/...`, `~/.pi/...`) |
-| `--here` (`-H`) | no | A CLI-supplied selection, into the **current directory** via each agent's `paths.project.*` |
+| `--here` (default, `-H`) | yes | A CLI-supplied selection, into the **current directory** via each agent's `paths.project.*` |
+| `--global` (`-G`) | no | Each agent's `global_profile`, to canonical paths (`~/.claude/...`, `~/.copilot/...`, `~/.pi/...`) |
 
 ### Inspect first, deploy second
 
 ```sh
-twagent apply -n                                # full preview, masked secrets
-twagent apply -n -S                             # same, secrets revealed
-twagent apply -n -a claude-code                 # preview ONE agent
-twagent apply -n -a claude-code -a copilot-cli  # preview a subset (repeatable)
+twagent apply --global -n                                # full preview, masked secrets
+twagent apply --global -n -S                             # same, secrets revealed
+twagent apply --global -n -a claude-code                 # preview ONE agent
+twagent apply --global -n -a claude-code -a copilot-cli  # preview a subset (repeatable)
 ```
 
 ### Override the default profile, globally
@@ -95,13 +97,13 @@ When you want to swap your MCP environment "for the day" without editing
 config:
 
 ```sh
-twagent apply -s e2e-emea                       # swap globally (all 3 agents
-                                                # with mcp capability)
-twagent apply -s e2e-emea -a copilot-cli        # only copilot's MCP file
-                                                # NOTHING ELSE rewritten —
-                                                # no instruction render,
-                                                # no skill symlinks
-twagent apply -s e2e-emea,bkmr-memory           # mix: e2e MCP set + one skill
+twagent apply --global -s e2e-emea                 # swap globally (all 3 agents
+                                                   # with mcp capability)
+twagent apply --global -s e2e-emea -a copilot-cli  # only copilot's MCP file
+                                                   # NOTHING ELSE rewritten —
+                                                   # no instruction render,
+                                                   # no skill symlinks
+twagent apply --global -s e2e-emea,bkmr-memory     # mix: e2e MCP set + one skill
 ```
 
 `--select` is **exhaustive**: kinds that aren't in the selection are not
@@ -119,20 +121,21 @@ twagent apply -s core,pr_review,e2e-us          # three profiles composed
                                                 # to define a wrapper profile)
 ```
 
-### Project-local deploys with `--here`
+### Project-local deploys (the default — `--here`)
 
 ```sh
 cd ~/dev/los/los-cha
 
-twagent apply -H -s tw-claude,tw-cucumber-to-http -a claude-code
-twagent apply -H -s tw-copilot,tw-cucumber-to-http -a copilot-cli
+twagent apply -s tw-claude,tw-cucumber-to-http -a claude-code
+twagent apply -s tw-copilot,tw-cucumber-to-http -a copilot-cli
 
 # Faster: just the project-specific delta
-twagent apply -H -s tw-cucumber-to-http -a claude-code
+twagent apply -s tw-cucumber-to-http -a claude-code
 ```
 
-`--here` writes under cwd via each agent's `paths.project.*`. Subdirs are
-created if missing — this is an explicit user act.
+`--here` is the default — pass `-H` only for clarity. It writes under cwd
+via each agent's `paths.project.*`. Subdirs are created if missing — this
+is an explicit user act.
 
 ### Just the instruction templates
 
@@ -161,16 +164,16 @@ twagent apply -s tw-claude -i                   # picker pre-checked with
 
 ```sh
 $EDITOR ~/.config/twagent/config.toml           # tweak something
-twagent diff                                    # what would change?
-twagent apply                                   # do it
+twagent diff                                    # what would change globally?
+twagent apply --global                          # do it (global)
 ```
 
 ## `apply` flags
 
 | Long | Short | Effect |
 |---|---|---|
-| `--global` | `-G` | Default mode. Deploy each agent's `global_profile` to canonical paths. |
-| `--here` | `-H` | Deploy `--select` set into current directory via `paths.project.*`. |
+| `--here` | `-H` | Default mode. Deploy `--select` set into current directory via `paths.project.*`. |
+| `--global` | `-G` | Deploy each agent's `global_profile` to canonical paths. |
 | `--agent <id>` | `-a` | Repeatable. Restrict to specific agents. |
 | `--select <names>` | `-s` | csv of profile names AND/OR artifact names. `none` deploys empty. |
 | `--interactive` | `-i` | Open TUI picker. `--select`, if also given, pre-checks items. |

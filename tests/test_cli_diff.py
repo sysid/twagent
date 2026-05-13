@@ -44,7 +44,7 @@ servers = ["gh"]
 
 
 def test_in_sync_after_apply_exits_zero(deployed_world):
-    runner.invoke(app, ["--config", str(deployed_world), "apply"])
+    runner.invoke(app, ["--config", str(deployed_world), "apply", "--global"])
     result = runner.invoke(app, ["--config", str(deployed_world), "diff"])
     assert result.exit_code == 0
     assert result.output.strip() == ""

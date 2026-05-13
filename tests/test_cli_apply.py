@@ -78,31 +78,33 @@ servers = ["github"]
     }
 
 
-# ─── Bare apply (= --global) ────────────────────────────────────────────
+# ─── Global apply (now requires explicit --global) ──────────────────────
 
 
-def test_bare_apply_deploys_global_profile(real_world_config):
+def test_global_apply_deploys_global_profile(real_world_config):
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
     assert result.exit_code == 0, result.output
     assert (claude_root / "CLAUDE.md").exists()
     assert (claude_root / "skills" / "bkmr").is_symlink()
     assert (claude_root / ".claude.json").exists()
 
 
-def test_explicit_global_flag(real_world_config):
+def test_bare_apply_defaults_to_here_mode(real_world_config, tmp_path, monkeypatch):
+    """With --here as default, bare `apply` (no --global, no --select) errors
+    on missing --select instead of running a global sync."""
     cfg = real_world_config["config"]
-    claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
-    assert result.exit_code == 0, result.output
-    assert (claude_root / "CLAUDE.md").exists()
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["--config", str(cfg), "apply"])
+    assert result.exit_code == 2
+    assert "--here requires --select" in result.output
 
 
 def test_apply_is_idempotent(real_world_config):
     cfg = real_world_config["config"]
-    runner.invoke(app, ["--config", str(cfg), "apply"])
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--dry-run"])
+    runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global", "--dry-run"])
     assert result.exit_code == 0
 
 
@@ -124,7 +126,7 @@ def test_global_and_here_mutually_exclusive(real_world_config):
 def test_dry_run_writes_nothing(real_world_config):
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--dry-run"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global", "--dry-run"])
     assert result.exit_code == 0
     assert not (claude_root / "CLAUDE.md").exists()
     assert not (claude_root / ".claude.json").exists()
@@ -135,7 +137,7 @@ def test_dry_run_writes_nothing(real_world_config):
 
 def test_dry_run_masks_resolved_secrets(real_world_config):
     cfg = real_world_config["config"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--dry-run"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global", "--dry-run"])
     assert "ghs_real_token" not in result.output
     assert "***" in result.output
 
@@ -143,7 +145,7 @@ def test_dry_run_masks_resolved_secrets(real_world_config):
 def test_show_secrets_reveals_resolved_secrets(real_world_config):
     cfg = real_world_config["config"]
     result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--dry-run", "--show-secrets"]
+        app, ["--config", str(cfg), "apply", "--global", "--dry-run", "--show-secrets"]
     )
     assert "ghs_real_token" in result.output
 
@@ -152,7 +154,7 @@ def test_real_apply_writes_actual_secret_to_disk(real_world_config):
     """Masking is presentation-only; the real file on disk has real values."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    runner.invoke(app, ["--config", str(cfg), "apply"])
+    runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
     mcp_json = json.loads((claude_root / ".claude.json").read_text())
     assert mcp_json["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "ghs_real_token"
 
@@ -166,7 +168,9 @@ def test_select_with_profile_name_overrides_global_profile(real_world_config):
     claude_root = real_world_config["claude_root"]
     # Create an alternate profile in-place via fixture-tweak: the existing
     # 'tw' profile is the only one. Verify --select tw still works as a profile.
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "tw"])
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--select", "tw"]
+    )
     assert result.exit_code == 0, result.output
     assert (claude_root / "skills" / "bkmr").is_symlink()
 
@@ -175,7 +179,9 @@ def test_select_with_artifact_name(real_world_config):
     """`--select bkmr` deploys ONLY that skill (v3): no MCP, no instructions."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "bkmr"])
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--select", "bkmr"]
+    )
     assert result.exit_code == 0, result.output
     assert (claude_root / "skills" / "bkmr").is_symlink()
     # bkmr is a skill; MCP and instructions capabilities NOT in needed_caps
@@ -187,7 +193,9 @@ def test_select_mixed_profile_and_artifact(real_world_config):
     """`--select tw,bkmr` resolves dedup'd: tw expands to {bkmr, github}; bkmr extra is no-op."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "tw,bkmr"])
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--select", "tw,bkmr"]
+    )
     assert result.exit_code == 0, result.output
     assert (claude_root / "skills" / "bkmr").is_symlink()
 
@@ -195,7 +203,7 @@ def test_select_mixed_profile_and_artifact(real_world_config):
 def test_select_unknown_name_exits_two(real_world_config):
     cfg = real_world_config["config"]
     result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--select", "ghost-name"]
+        app, ["--config", str(cfg), "apply", "--global", "--select", "ghost-name"]
     )
     assert result.exit_code == 2
     assert "Unknown name" in result.output
@@ -226,6 +234,7 @@ def test_select_preseeds_interactive_picker(real_world_config, monkeypatch):
             "--config",
             str(cfg),
             "apply",
+            "--global",
             "--select",
             "bkmr",
             "--interactive",
@@ -240,10 +249,10 @@ def test_select_preseeds_interactive_picker(real_world_config, monkeypatch):
 def test_short_flags_work(real_world_config):
     """All conventional short flags resolve to the same handlers."""
     cfg = real_world_config["config"]
-    # -n is --dry-run, -s is --select, -a is --agent
+    # -n is --dry-run, -s is --select, -a is --agent, -G is --global
     result = runner.invoke(
         app,
-        ["--config", str(cfg), "apply", "-n", "-s", "bkmr", "-a", "claude-code"],
+        ["--config", str(cfg), "apply", "-G", "-n", "-s", "bkmr", "-a", "claude-code"],
     )
     assert result.exit_code == 0, result.output
 
@@ -324,13 +333,13 @@ def test_here_with_mcp_profile(real_world_config, tmp_path, monkeypatch):
 
 
 def test_select_servers_only_skips_instructions(real_world_config):
-    """Tom's exact bug: `apply --select github -a claude-code` should NOT
-    render CLAUDE.md, only write the MCP file."""
+    """Tom's exact bug: `apply --global --select github -a claude-code` should
+    NOT render CLAUDE.md, only write the MCP file."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
     result = runner.invoke(
         app,
-        ["--config", str(cfg), "apply", "-s", "github", "-a", "claude-code"],
+        ["--config", str(cfg), "apply", "-G", "-s", "github", "-a", "claude-code"],
     )
     assert result.exit_code == 0, result.output
     assert (claude_root / ".claude.json").exists()
@@ -361,7 +370,7 @@ def test_select_instruction_name_renders_only_template(real_world_config):
     """`--select AGENT-md` renders the instruction; nothing else."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "-s", "AGENT-md"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-G", "-s", "AGENT-md"])
     assert result.exit_code == 0, result.output
     assert (claude_root / "CLAUDE.md").exists()
     assert not (claude_root / ".claude.json").exists()
@@ -395,6 +404,6 @@ source = "{tpl_a}"
 [instructions.b]
 source = "{tpl_b}"
 """)
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "-s", "a,b"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-G", "-s", "a,b"])
     assert result.exit_code == 1
     assert "at most ONE instruction" in result.output
