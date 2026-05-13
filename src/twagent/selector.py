@@ -82,9 +82,7 @@ def resolve_profile(profile_name: str, kind: str, config: "Configuration") -> li
     return list(expanded.get(kind))
 
 
-def resolve_selection(
-    names: list[str], config: "Configuration"
-) -> ProfileExpansion:
+def resolve_selection(names: list[str], config: "Configuration") -> ProfileExpansion:
     """Polymorphic name resolution for `--select` (NEW in v2).
 
     Each name in the list resolves to either:

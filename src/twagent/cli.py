@@ -436,7 +436,8 @@ def status() -> None:
         table.add_row(
             agent_id,
             ", ".join(agent.capabilities),
-            agent.global_profile or "[dim]— (no default; use local apply --select)[/dim]",
+            agent.global_profile
+            or "[dim]— (no default; use local apply --select)[/dim]",
             agent.mcp_format or "—",
         )
     console.print(table)
@@ -616,9 +617,7 @@ def artefacts(
     for kind in kinds:
         for art_name, item in config.registry(kind).items():
             if isinstance(item, Server):
-                src_or_type = item.type + (
-                    f" ({item.command})" if item.command else ""
-                )
+                src_or_type = item.type + (f" ({item.command})" if item.command else "")
                 desc = "—"
             else:
                 src_or_type = str(item.source)
@@ -627,9 +626,7 @@ def artefacts(
     console.print(table)
 
 
-def _print_artefact_details(
-    kind: str, item: "FileArtifact | Server"
-) -> None:
+def _print_artefact_details(kind: str, item: "FileArtifact | Server") -> None:
     """Print all relevant fields of a single artefact to stdout."""
     table = Table(title=f"{kind}.{item.name}")
     table.add_column("Field")

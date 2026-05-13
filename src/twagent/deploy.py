@@ -334,7 +334,9 @@ def apply_here(
         resolve_expanded=lambda agent: _resolve_here_expansion(
             agent, expanded, needed_caps, agent_filter
         ),
-        cap_iter=lambda agent, _exp: [c for c in agent.capabilities if c in needed_caps],
+        cap_iter=lambda agent, _exp: [
+            c for c in agent.capabilities if c in needed_caps
+        ],
         targets_of=lambda agent, cap: _project_targets(agent, cap, cwd),
         warn_on_no_targets=True,
     )
@@ -372,7 +374,8 @@ def _apply_to_agents(
         if agent_filter and agent_id not in agent_filter:
             logger.debug(
                 "deploy.apply_%s: agent %s excluded by --agent filter",
-                mode_label, agent_id,
+                mode_label,
+                agent_id,
             )
             continue
         outcome = resolve_expanded(agent)
@@ -387,7 +390,9 @@ def _apply_to_agents(
         caps = cap_iter(agent, expanded)
         logger.debug(
             "deploy.apply_%s: agent=%s caps_to_deploy=%s",
-            mode_label, agent_id, caps,
+            mode_label,
+            agent_id,
+            caps,
         )
         for capability in caps:
             targets = targets_of(agent, capability)
@@ -403,14 +408,19 @@ def _apply_to_agents(
                 else:
                     logger.debug(
                         "deploy.apply_%s: agent=%s cap=%s has no paths.%s.%s; skipping",
-                        mode_label, agent_id, capability,
+                        mode_label,
+                        agent_id,
+                        capability,
                         "project" if warn_on_no_targets else "global",
                         capability,
                     )
                 continue
             logger.debug(
                 "deploy.apply_%s: deploying agent=%s cap=%s targets=%d",
-                mode_label, agent_id, capability, len(targets),
+                mode_label,
+                agent_id,
+                capability,
+                len(targets),
             )
             ctx = DeployContext(
                 config=config,
@@ -423,7 +433,10 @@ def _apply_to_agents(
             _apply_one(ctx, capability, targets)
     logger.debug(
         "deploy.apply_%s DONE: written=%d errors=%d warnings=%d",
-        mode_label, len(result.written), len(result.errors), len(result.warnings),
+        mode_label,
+        len(result.written),
+        len(result.errors),
+        len(result.warnings),
     )
     return result
 

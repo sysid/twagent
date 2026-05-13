@@ -104,7 +104,9 @@ def test_bare_apply_defaults_to_here_mode(real_world_config, tmp_path, monkeypat
 def test_apply_is_idempotent(real_world_config):
     cfg = real_world_config["config"]
     runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global", "--dry-run"])
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--dry-run"]
+    )
     assert result.exit_code == 0
 
 
@@ -114,7 +116,9 @@ def test_apply_is_idempotent(real_world_config):
 def test_dry_run_writes_nothing(real_world_config):
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global", "--dry-run"])
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--dry-run"]
+    )
     assert result.exit_code == 0
     assert not (claude_root / "CLAUDE.md").exists()
     assert not (claude_root / ".claude.json").exists()
@@ -125,7 +129,9 @@ def test_dry_run_writes_nothing(real_world_config):
 
 def test_dry_run_masks_resolved_secrets(real_world_config):
     cfg = real_world_config["config"]
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global", "--dry-run"])
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--dry-run"]
+    )
     assert "ghs_real_token" not in result.output
     assert "***" in result.output
 
@@ -279,9 +285,7 @@ def test_here_deploys_to_cwd(real_world_config, tmp_path, monkeypatch):
     project_root = tmp_path / "myproj"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
-    result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--select", "bkmr"]
-    )
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "bkmr"])
     assert result.exit_code == 0, result.output
     # Skill landed under project root
     assert (project_root / ".claude" / "skills" / "bkmr").is_symlink()
@@ -295,9 +299,7 @@ def test_here_creates_target_subdirs(real_world_config, tmp_path, monkeypatch):
     project_root = tmp_path / "fresh"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
-    result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--select", "bkmr"]
-    )
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "bkmr"])
     assert result.exit_code == 0, result.output
     assert (project_root / ".claude" / "skills").is_dir()
 
@@ -308,9 +310,7 @@ def test_here_with_mcp_profile(real_world_config, tmp_path, monkeypatch):
     project_root = tmp_path / "p"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
-    result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--select", "github"]
-    )
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "github"])
     assert result.exit_code == 0, result.output
     assert (project_root / ".mcp.json").exists()
     # No instructions written: selection has no instruction kind
