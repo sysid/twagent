@@ -1,7 +1,7 @@
 """Diff: report per-file divergence between resolved global config and on-disk state.
 
 Schema v2: only the global side has a stable "intended state" (each agent's
-`global_profile`). Ad-hoc local deployments via `apply --here` have no
+`global_profile`). Ad-hoc local deployments via `apply --select` have no
 persistent intended state to diff against, so `diff` covers globals only.
 
 Read-only. Never modifies the filesystem.
@@ -12,16 +12,18 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
-from twagent.config import Agent, Configuration
+from twagent.config import Agent, Configuration, FileArtifact, ProfileExpansion
 from twagent.deploy import (
     _global_targets,
     compile_mcp_for_agent,
-    expand_profile,
     render_template,
 )
+from twagent.expansion import expand_profile
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,20 @@ logger = logging.getLogger(__name__)
 class DiffReport:
     lines: list[str] = field(default_factory=list)
     in_sync: bool = True
+
+
+@dataclass
+class DiffContext:
+    """Bundle threaded through the per-(agent, cap) diff helpers.
+
+    Mirror of `deploy.DeployContext` minus dry_run (diff never writes).
+    """
+
+    config: Configuration
+    agent: Agent
+    expanded: ProfileExpansion
+    report: DiffReport
+    show_secrets: bool = False
 
 
 def compute_diff(
@@ -47,15 +63,15 @@ def compute_diff(
             logger.debug("diff: agent %s has no global_profile; skipping", agent_id)
             continue
         expanded = expand_profile(config, agent.global_profile)
+        ctx = DiffContext(
+            config=config,
+            agent=agent,
+            expanded=expanded,
+            report=report,
+            show_secrets=show_secrets,
+        )
         for cap in agent.capabilities:
-            _diff_one(
-                config,
-                agent,
-                cap,
-                expanded,
-                report,
-                show_secrets=show_secrets,
-            )
+            _diff_one(ctx, cap)
     logger.debug(
         "diff.compute_diff DONE: lines=%d in_sync=%s",
         len(report.lines),
@@ -64,42 +80,20 @@ def compute_diff(
     return report
 
 
-def _diff_one(
-    config: Configuration,
-    agent: Agent,
-    cap: str,
-    expanded: dict[str, list[str]],
-    report: DiffReport,
-    *,
-    show_secrets: bool,
-) -> None:
-    logger.debug("diff._diff_one: agent=%s cap=%s", agent.id, cap)
-    targets = _global_targets(agent, cap)
+def _diff_one(ctx: DiffContext, cap: str) -> None:
+    logger.debug("diff._diff_one: agent=%s cap=%s", ctx.agent.id, cap)
+    targets = _global_targets(ctx.agent, cap)
     if not targets:
         return
-    if cap == "instructions":
-        _diff_instructions(config, agent, expanded, targets, report)
-    elif cap in ("skills", "subagents", "prompts"):
-        _diff_links(config, agent, cap, expanded, targets, report)
-    elif cap == "mcp":
-        _diff_mcp(
-            config,
-            agent,
-            expanded,
-            targets,
-            report,
-            show_secrets=show_secrets,
-        )
+    handler = _DIFF_DISPATCH.get(cap)
+    if handler is None:
+        return
+    handler(ctx, cap, targets)
 
 
-def _diff_instructions(
-    config: Configuration,
-    agent: Agent,
-    expanded: dict[str, list[str]],
-    targets: list[Path],
-    report: DiffReport,
-) -> None:
-    members = expanded.get("instructions", [])
+def _diff_instructions(ctx: DiffContext, targets: list[Path]) -> None:
+    config, agent, expanded, report = ctx.config, ctx.agent, ctx.expanded, ctx.report
+    members = expanded.instructions
     if not members or members[0] not in config.instructions:
         return
     tpl_path = config.instructions[members[0]].source
@@ -121,9 +115,11 @@ def _diff_instructions(
             report.lines.append(diff)
 
 
-def _diff_links(config, agent, cap, expanded, targets, report):
-    registry = getattr(config, cap)
-    members = expanded.get(cap, [])
+def _diff_links(ctx: DiffContext, cap: str, targets: list[Path]) -> None:
+    config, agent, expanded, report = ctx.config, ctx.agent, ctx.expanded, ctx.report
+    # Dispatch table only routes file kinds here; cast narrows the union.
+    registry = cast(dict[str, FileArtifact], config.registry(cap))
+    members = expanded.get(cap)
     intended = {n: registry[n].source for n in members if n in registry}
     for target_dir in targets:
         for name, src in intended.items():
@@ -140,8 +136,10 @@ def _diff_links(config, agent, cap, expanded, targets, report):
                 report.lines.append(f"~ {label}: was → {link.resolve()}; now → {src}")
 
 
-def _diff_mcp(config, agent, expanded, targets, report, *, show_secrets):
-    server_names = expanded.get("servers", [])
+def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
+    config, agent, expanded, report = ctx.config, ctx.agent, ctx.expanded, ctx.report
+    show_secrets = ctx.show_secrets
+    server_names = expanded.servers
     intended_dict = compile_mcp_for_agent(
         config,
         agent,
@@ -196,3 +194,25 @@ def _mask_in_place(node: object) -> None:
     elif isinstance(node, list):
         for item in node:
             _mask_in_place(item)
+
+
+# ─── Dispatch table ─────────────────────────────────────────────────────
+
+
+def _dispatch_diff_instructions(
+    ctx: DiffContext, _cap: str, targets: list[Path]
+) -> None:
+    _diff_instructions(ctx, targets)
+
+
+def _dispatch_diff_mcp(ctx: DiffContext, _cap: str, targets: list[Path]) -> None:
+    _diff_mcp(ctx, targets)
+
+
+_DIFF_DISPATCH: dict[str, Callable[[DiffContext, str, list[Path]], None]] = {
+    "instructions": _dispatch_diff_instructions,
+    "skills": _diff_links,
+    "subagents": _diff_links,
+    "prompts": _diff_links,
+    "mcp": _dispatch_diff_mcp,
+}

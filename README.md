@@ -31,7 +31,7 @@ into each agent's expected JSON shape.
 
 ```
   ┌──────────────┐    ┌─────────────┐
-  │  Registries  │ →  │   Profiles  │ →  apply (--here | --global)
+  │  Registries  │ →  │   Profiles  │ →  apply (local | --global)
   │              │    │  (composable│        │
   │ instructions │    │   bundles)  │        ▼
   │ skills       │    │             │   per-agent paths
@@ -62,7 +62,7 @@ twagent agents                    # capabilities + global_profile + paths
 twagent profiles                  # extends-expanded contents per profile
 twagent status                    # per-agent global deployment view
 
-# Preview, then deploy (--here is the default; --select is required)
+# Preview, then deploy (local is the default; --select is required)
 twagent apply -s tw-claude -n     # dry-run, secrets masked
 twagent apply -s tw-claude        # do it (local, into cwd)
 twagent apply --global -n         # preview global deploy
@@ -79,7 +79,7 @@ The deploy command is the surface area. Two modes:
 
 | Mode | Default | What it writes |
 |---|---|---|
-| `--here` (default, `-H`) | yes | A CLI-supplied selection, into the **current directory** via each agent's `paths.project.*` |
+| local (default — no flag) | yes | A CLI-supplied selection, into the **current directory** via each agent's `paths.project.*` |
 | `--global` (`-G`) | no | Each agent's `global_profile`, to canonical paths (`~/.claude/...`, `~/.copilot/...`, `~/.pi/...`) |
 
 ### Inspect first, deploy second
@@ -121,7 +121,7 @@ twagent apply -s core,pr_review,e2e-us          # three profiles composed
                                                 # to define a wrapper profile)
 ```
 
-### Project-local deploys (the default — `--here`)
+### Project-local deploys (the default)
 
 ```sh
 cd ~/dev/los/los-cha
@@ -133,9 +133,10 @@ twagent apply -s tw-copilot,tw-cucumber-to-http -a copilot-cli
 twagent apply -s tw-cucumber-to-http -a claude-code
 ```
 
-`--here` is the default — pass `-H` only for clarity. It writes under cwd
+Local deploy is the default mode — no flag needed. It writes under cwd
 via each agent's `paths.project.*`. Subdirs are created if missing — this
-is an explicit user act.
+is an explicit user act. Use `--global` to deploy each agent's
+`global_profile` to canonical paths instead.
 
 ### Just the instruction templates
 
@@ -172,7 +173,7 @@ twagent apply --global                          # do it (global)
 
 | Long | Short | Effect |
 |---|---|---|
-| `--here` | `-H` | Default mode. Deploy `--select` set into current directory via `paths.project.*`. |
+| _(default — no flag)_ | — | Deploy `--select` set into current directory via `paths.project.*`. |
 | `--global` | `-G` | Deploy each agent's `global_profile` to canonical paths. |
 | `--agent <id>` | `-a` | Repeatable. Restrict to specific agents. |
 | `--select <names>` | `-s` | csv of profile names AND/OR artifact names. `none` deploys empty. |
@@ -210,7 +211,7 @@ Headlines (v3 schema):
 - **Profiles bundle artifact references** by kind, and compose via `extends`
   (depth-first, parent-first, dedup'd per kind, first-occurrence wins).
 - **No `[[scopes]]` blocks.** Global deployment is per-agent
-  (`global_profile`); local deployment is ad-hoc CLI (`apply --here --select`).
+  (`global_profile`); local deployment is ad-hoc CLI (`apply --select`).
 - **Symlinks for file artifacts** (skills/subagents/prompts).
 - **Render for instructions** (Jinja2, `StrictUndefined`).
 - **Compile for MCP** (per-format translator handles agent-specific quirks).
@@ -246,7 +247,7 @@ sections, all keyed by name. Names are **globally unique across all artifact reg
 - `mcp_format`: translator key — `claude-code` | `copilot-cli` | `pi`. Required if `mcp` is in capabilities.
 - `global_profile`: profile name deployed by `twagent apply --global`.
 - `paths.global.<kind>`: list of canonical destination paths (per capability).
-- `paths.project.<kind>`: list of cwd-relative destinations used by `apply --here`.
+- `paths.project.<kind>`: list of cwd-relative destinations used by local `apply`.
 - `vars`: Jinja vars layered over `[common.vars]`.
 
 **File artifact** (`[skills.<name>]`, `[subagents.<name>]`, `[prompts.<name>]`, `[instructions.<name>]`):

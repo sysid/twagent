@@ -15,22 +15,27 @@ Single module owns three deploy modes — kept together until tests want a split
 
 from __future__ import annotations
 
+import json
 import logging
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from twagent.config import (
-    EXPANSION_KINDS,
     Agent,
     Configuration,
     FileArtifact,
+    ProfileExpansion,
     Server,
 )
+from twagent.expansion import expand_profile, needed_capabilities
 from twagent.interpolate import resolve_variables
 from twagent.mcp import get_format, transform_for_format, write_config
+from twagent.selector import resolve_selection
 
 logger = logging.getLogger(__name__)
 
@@ -67,62 +72,21 @@ class ApplyResult:
         return bool(self.errors)
 
 
-# ─── Profile expansion ──────────────────────────────────────────────────
+@dataclass
+class DeployContext:
+    """Bundle of values threaded through every per-(agent, capability) helper.
 
-
-def expand_profile(config: Configuration, profile_name: str) -> dict[str, list[str]]:
-    """Expand a profile's `extends` chain.
-
-    Per data-model.md § Composition semantics: depth-first, parent-first then
-    child; first occurrence wins on dedup; per-type (not cross-type).
+    Internal-only: orchestrators (`apply_global` / `apply_here`) build a
+    `DeployContext` then dispatch per-capability handlers against it. Public
+    APIs are unchanged.
     """
-    logger.debug("deploy.expand_profile: profile=%s", profile_name)
-    out: dict[str, list[str]] = {kind: [] for kind in EXPANSION_KINDS}
-    visited: set[str] = set()
 
-    def _walk(name: str) -> None:
-        if name in visited:
-            return
-        visited.add(name)
-        prof = config.profiles[name]
-        for parent in prof.extends:
-            _walk(parent)
-        for kind in out:
-            for ref in getattr(prof, kind):
-                if ref not in out[kind]:
-                    out[kind].append(ref)
-
-    _walk(profile_name)
-    logger.debug(
-        "deploy.expand_profile %s → instructions=%d skills=%d subagents=%d "
-        "prompts=%d servers=%d",
-        profile_name,
-        len(out["instructions"]),
-        len(out["skills"]),
-        len(out["subagents"]),
-        len(out["prompts"]),
-        len(out["servers"]),
-    )
-    return out
-
-
-# ─── Selection-derived capability set ───────────────────────────────────
-
-
-def _needed_capabilities(expanded: dict[str, list[str]]) -> set[str]:
-    """Map a per-kind selection to the set of CAPABILITY names it touches.
-
-    `servers` selection kind → `mcp` capability; everything else maps 1:1.
-    Used by both `apply_global` (when --select overrides) and `apply_here`
-    to skip capabilities the selection doesn't contribute to. Replaces the
-    instructions-special-case logic of the v2 code path.
-    """
-    needed: set[str] = set()
-    for kind, members in expanded.items():
-        if not members:
-            continue
-        needed.add("mcp" if kind == "servers" else kind)
-    return needed
+    config: Configuration
+    agent: Agent
+    expanded: ProfileExpansion
+    result: ApplyResult
+    dry_run: bool = False
+    show_secrets: bool = False
 
 
 # ─── Render (instructions) ──────────────────────────────────────────────
@@ -313,75 +277,23 @@ def apply_global(
         dry_run,
         show_secrets,
     )
-    result = ApplyResult()
-
-    selection_override: dict[str, list[str]] | None = None
-    if select is not None:
-        from twagent.selector import resolve_selection  # avoid cycle
-
-        selection_override = resolve_selection(select, config)
-
-    for agent_id, agent in config.agents.items():
-        if agent_filter and agent_id not in agent_filter:
-            logger.debug("deploy.apply_global: agent %s excluded by --agent filter", agent_id)
-            continue
-
-        if selection_override is not None:
-            expanded = selection_override
-        elif agent.global_profile is not None:
-            expanded = expand_profile(config, agent.global_profile)
-        else:
-            msg = (
-                f"{agent_id}: no global_profile set and no --select override — skipped."
-            )
-            logger.debug("deploy.apply_global: %s", msg)
-            if agent_filter and agent_id in agent_filter:
-                result.warnings.append(msg)
-            continue
-
-        if selection_override is not None:
-            allowed_caps = _needed_capabilities(expanded)
-            cap_iter = [c for c in agent.capabilities if c in allowed_caps]
-        else:
-            cap_iter = list(agent.capabilities)
-        logger.debug(
-            "deploy.apply_global: agent=%s caps_to_deploy=%s",
-            agent_id,
-            cap_iter,
-        )
-
-        for capability in cap_iter:
-            targets = _global_targets(agent, capability)
-            if not targets:
-                logger.debug(
-                    "deploy.apply_global: agent=%s cap=%s has no paths.global.%s; skipping",
-                    agent_id,
-                    capability,
-                    capability,
-                )
-                continue
-            logger.debug(
-                "deploy.apply_global: deploying agent=%s cap=%s targets=%d",
-                agent_id,
-                capability,
-                len(targets),
-            )
-            _apply_one(
-                config,
-                agent,
-                capability,
-                expanded,
-                targets,
-                result,
-                dry_run=dry_run,
-                show_secrets=show_secrets,
-            )
-
-    logger.debug(
-        "deploy.apply_global DONE: written=%d errors=%d warnings=%d",
-        len(result.written),
-        len(result.errors),
-        len(result.warnings),
+    selection_override: ProfileExpansion | None = (
+        resolve_selection(select, config) if select is not None else None
+    )
+    result = _apply_to_agents(
+        config,
+        agent_filter=agent_filter,
+        dry_run=dry_run,
+        show_secrets=show_secrets,
+        mode_label="global",
+        resolve_expanded=lambda agent: _resolve_global_expansion(
+            config, agent, selection_override, agent_filter
+        ),
+        cap_iter=lambda agent, expanded: _global_cap_iter(
+            agent, expanded, selection_override
+        ),
+        targets_of=lambda agent, cap: _global_targets(agent, cap),
+        warn_on_no_targets=False,
     )
     return result
 
@@ -411,109 +323,175 @@ def apply_here(
         dry_run,
         show_secrets,
     )
-    result = ApplyResult()
-
-    from twagent.selector import resolve_selection  # avoid cycle
-
     expanded = resolve_selection(select, config)
-    needed_caps = _needed_capabilities(expanded)
+    needed_caps = needed_capabilities(expanded)
+    result = _apply_to_agents(
+        config,
+        agent_filter=agent_filter,
+        dry_run=dry_run,
+        show_secrets=show_secrets,
+        mode_label="here",
+        resolve_expanded=lambda agent: _resolve_here_expansion(
+            agent, expanded, needed_caps, agent_filter
+        ),
+        cap_iter=lambda agent, _exp: [c for c in agent.capabilities if c in needed_caps],
+        targets_of=lambda agent, cap: _project_targets(agent, cap, cwd),
+        warn_on_no_targets=True,
+    )
+    return result
 
+
+# ─── Shared orchestration ───────────────────────────────────────────────
+
+
+def _apply_to_agents(
+    config: Configuration,
+    *,
+    agent_filter: list[str] | None,
+    dry_run: bool,
+    show_secrets: bool,
+    mode_label: str,
+    resolve_expanded: Callable[[Agent], "ProfileExpansion | _Skip | None"],
+    cap_iter: Callable[[Agent, ProfileExpansion], list[str]],
+    targets_of: Callable[[Agent, str], list[Path]],
+    warn_on_no_targets: bool,
+) -> ApplyResult:
+    """Drive the per-(agent, capability) deploy loop shared by both modes.
+
+    Mode-specific behaviour is injected via callbacks:
+      - `resolve_expanded`: produce the ProfileExpansion for an agent, or a
+        `_Skip(msg)` sentinel to surface a warning when explicitly requested,
+        or None to skip silently.
+      - `cap_iter`: yield the capabilities of an agent to deploy for, in order.
+      - `targets_of`: resolve the target paths for one (agent, capability).
+      - `warn_on_no_targets`: when True (here mode), emit a "no paths.project"
+        warning if `targets_of` returns []; when False (global mode), silently skip.
+    """
+    result = ApplyResult()
     for agent_id, agent in config.agents.items():
         if agent_filter and agent_id not in agent_filter:
-            logger.debug("deploy.apply_here: agent %s excluded by --agent filter", agent_id)
-            continue
-        if not needed_caps & set(agent.capabilities):
-            msg = (
-                f"{agent_id}: capabilities {list(agent.capabilities)} do not "
-                f"intersect selection kinds {sorted(needed_caps)} — skipped."
+            logger.debug(
+                "deploy.apply_%s: agent %s excluded by --agent filter",
+                mode_label, agent_id,
             )
-            logger.debug("deploy.apply_here: %s", msg)
-            # User-visible only if they explicitly asked for this agent.
-            if agent_filter and agent_id in agent_filter:
-                result.warnings.append(msg)
             continue
-
-        for capability in agent.capabilities:
-            if capability not in needed_caps:
-                logger.debug(
-                    "deploy.apply_here: agent %s capability %s not in needed_caps %s; skipping",
-                    agent_id,
-                    capability,
-                    sorted(needed_caps),
-                )
-                continue
-            targets = _project_targets(agent, capability, cwd)
+        outcome = resolve_expanded(agent)
+        if outcome is None:
+            continue
+        if isinstance(outcome, _Skip):
+            logger.debug("deploy.apply_%s: %s", mode_label, outcome.msg)
+            if outcome.user_visible:
+                result.warnings.append(outcome.msg)
+            continue
+        expanded = outcome
+        caps = cap_iter(agent, expanded)
+        logger.debug(
+            "deploy.apply_%s: agent=%s caps_to_deploy=%s",
+            mode_label, agent_id, caps,
+        )
+        for capability in caps:
+            targets = targets_of(agent, capability)
             if not targets:
-                msg = (
-                    f"{agent_id}/{capability}: no `paths.project.{capability}` "
-                    f"configured — selection won't deploy under cwd. "
-                    f"Add it under [agents.{agent_id}.paths.project], or use --global."
-                )
-                logger.debug("deploy.apply_here: %s", msg)
-                result.warnings.append(msg)
+                if warn_on_no_targets:
+                    msg = (
+                        f"{agent_id}/{capability}: no `paths.project.{capability}` "
+                        f"configured — selection won't deploy under cwd. "
+                        f"Add it under [agents.{agent_id}.paths.project], or use --global."
+                    )
+                    logger.debug("deploy.apply_%s: %s", mode_label, msg)
+                    result.warnings.append(msg)
+                else:
+                    logger.debug(
+                        "deploy.apply_%s: agent=%s cap=%s has no paths.%s.%s; skipping",
+                        mode_label, agent_id, capability,
+                        "project" if warn_on_no_targets else "global",
+                        capability,
+                    )
                 continue
             logger.debug(
-                "deploy.apply_here: deploying agent=%s cap=%s targets=%d",
-                agent_id,
-                capability,
-                len(targets),
+                "deploy.apply_%s: deploying agent=%s cap=%s targets=%d",
+                mode_label, agent_id, capability, len(targets),
             )
-            _apply_one(
-                config,
-                agent,
-                capability,
-                expanded,
-                targets,
-                result,
+            ctx = DeployContext(
+                config=config,
+                agent=agent,
+                expanded=expanded,
+                result=result,
                 dry_run=dry_run,
                 show_secrets=show_secrets,
             )
-
+            _apply_one(ctx, capability, targets)
     logger.debug(
-        "deploy.apply_here DONE: written=%d errors=%d warnings=%d",
-        len(result.written),
-        len(result.errors),
-        len(result.warnings),
+        "deploy.apply_%s DONE: written=%d errors=%d warnings=%d",
+        mode_label, len(result.written), len(result.errors), len(result.warnings),
     )
     return result
+
+
+@dataclass
+class _Skip:
+    """Sentinel returned from a mode's resolve_expanded callback to skip an agent.
+
+    `user_visible` controls whether the message is added to result.warnings
+    (used only when the user explicitly named this agent via --agent).
+    """
+
+    msg: str
+    user_visible: bool = False
+
+
+def _resolve_global_expansion(
+    config: Configuration,
+    agent: Agent,
+    selection_override: "ProfileExpansion | None",
+    agent_filter: list[str] | None,
+) -> "ProfileExpansion | _Skip | None":
+    if selection_override is not None:
+        return selection_override
+    if agent.global_profile is not None:
+        return expand_profile(config, agent.global_profile)
+    return _Skip(
+        msg=f"{agent.id}: no global_profile set and no --select override — skipped.",
+        user_visible=bool(agent_filter and agent.id in agent_filter),
+    )
+
+
+def _global_cap_iter(
+    agent: Agent,
+    expanded: ProfileExpansion,
+    selection_override: "ProfileExpansion | None",
+) -> list[str]:
+    if selection_override is not None:
+        allowed_caps = needed_capabilities(expanded)
+        return [c for c in agent.capabilities if c in allowed_caps]
+    return list(agent.capabilities)
+
+
+def _resolve_here_expansion(
+    agent: Agent,
+    expanded: ProfileExpansion,
+    needed_caps: set[str],
+    agent_filter: list[str] | None,
+) -> "ProfileExpansion | _Skip | None":
+    if not needed_caps & set(agent.capabilities):
+        return _Skip(
+            msg=(
+                f"{agent.id}: capabilities {list(agent.capabilities)} do not "
+                f"intersect selection kinds {sorted(needed_caps)} — skipped."
+            ),
+            user_visible=bool(agent_filter and agent.id in agent_filter),
+        )
+    return expanded
 
 
 # ─── Per-(agent, capability) deploy dispatch ────────────────────────────
 
 
-def _apply_one(
-    config: Configuration,
-    agent: Agent,
-    capability: str,
-    expanded: dict[str, list[str]],
-    targets: list[Path],
-    result: ApplyResult,
-    *,
-    dry_run: bool,
-    show_secrets: bool,
-) -> None:
-    if capability == "instructions":
-        _deploy_instructions(config, agent, expanded, targets, result, dry_run=dry_run)
-    elif capability in ("skills", "subagents", "prompts"):
-        _deploy_file_artifacts(
-            config,
-            agent,
-            capability,
-            expanded,
-            targets,
-            result,
-            dry_run=dry_run,
-        )
-    elif capability == "mcp":
-        _deploy_mcp(
-            config,
-            agent,
-            expanded,
-            targets,
-            result,
-            dry_run=dry_run,
-            show_secrets=show_secrets,
-        )
+def _apply_one(ctx: DeployContext, capability: str, targets: list[Path]) -> None:
+    handler = _DEPLOY_DISPATCH.get(capability)
+    if handler is None:
+        return
+    handler(ctx, capability, targets)
 
 
 def _global_targets(agent: Agent, capability: str) -> list[Path]:
@@ -526,15 +504,7 @@ def _project_targets(agent: Agent, capability: str, cwd: Path) -> list[Path]:
     return [cwd / p for p in relative]
 
 
-def _deploy_instructions(
-    config: Configuration,
-    agent: Agent,
-    expanded: dict[str, list[str]],
-    targets: list[Path],
-    result: ApplyResult,
-    *,
-    dry_run: bool,
-) -> None:
+def _deploy_instructions(ctx: DeployContext, targets: list[Path]) -> None:
     """Render the (single) selected instruction template to each agent path.
 
     v3: instructions are first-class artifacts in `config.instructions`
@@ -542,7 +512,8 @@ def _deploy_instructions(
     contains 0..N instruction names; an agent has at most one instructions
     output per `paths.global.instructions` entry, so we enforce ≤ 1.
     """
-    members = expanded.get("instructions", [])
+    config, agent, expanded, result = ctx.config, ctx.agent, ctx.expanded, ctx.result
+    members = expanded.instructions
     if not members:
         return
     if len(members) > 1:
@@ -563,7 +534,7 @@ def _deploy_instructions(
         result.errors.append(f"render {agent.id}/instructions/{name}: {exc}")
         return
     for target in targets:
-        if dry_run:
+        if ctx.dry_run:
             result.dry_run_log.append(f"render → {target}\n{_indent(rendered)}")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -572,23 +543,18 @@ def _deploy_instructions(
 
 
 def _deploy_file_artifacts(
-    config: Configuration,
-    agent: Agent,
-    capability: str,
-    expanded: dict[str, list[str]],
-    targets: list[Path],
-    result: ApplyResult,
-    *,
-    dry_run: bool,
+    ctx: DeployContext, capability: str, targets: list[Path]
 ) -> None:
-    registry: dict[str, FileArtifact] = getattr(config, capability)
-    members = expanded.get(capability, [])
+    config, agent, expanded, result = ctx.config, ctx.agent, ctx.expanded, ctx.result
+    # Dispatch table only routes file kinds here; cast narrows the union.
+    registry = cast(dict[str, FileArtifact], config.registry(capability))
+    members = expanded.get(capability)
     sources = {name: registry[name].source for name in members if name in registry}
     for target_dir in targets:
-        link_result = link_artifacts(sources, target_dir, dry_run=dry_run)
+        link_result = link_artifacts(sources, target_dir, dry_run=ctx.dry_run)
         for name in link_result.created + link_result.relinked:
             label = f"{agent.id}/{capability}/{name} → {target_dir}"
-            if dry_run:
+            if ctx.dry_run:
                 result.dry_run_log.append(f"symlink {label}")
             else:
                 result.written.append(label)
@@ -602,32 +568,22 @@ def _deploy_file_artifacts(
             result.errors.append(f"{agent.id}/{capability}: {err}")
 
 
-def _deploy_mcp(
-    config: Configuration,
-    agent: Agent,
-    expanded: dict[str, list[str]],
-    targets: list[Path],
-    result: ApplyResult,
-    *,
-    dry_run: bool,
-    show_secrets: bool,
-) -> None:
-    server_names = expanded.get("servers", [])
+def _deploy_mcp(ctx: DeployContext, targets: list[Path]) -> None:
+    config, agent, expanded, result = ctx.config, ctx.agent, ctx.expanded, ctx.result
+    server_names = expanded.servers
     try:
         compiled = compile_mcp_for_agent(
             config,
             agent,
             server_names,
-            dry_run=dry_run,
-            show_secrets=show_secrets,
+            dry_run=ctx.dry_run,
+            show_secrets=ctx.show_secrets,
         )
     except Exception as exc:
         result.errors.append(f"{agent.id}/mcp: {exc}")
         return
     for target in targets:
-        if dry_run:
-            import json
-
+        if ctx.dry_run:
             preview = json.dumps(compiled, indent=2)
             result.dry_run_log.append(f"mcp → {target}\n{_indent(preview)}")
         else:
@@ -639,13 +595,35 @@ def _indent(text: str, prefix: str = "  ") -> str:
     return "\n".join(prefix + line for line in text.splitlines())
 
 
+# ─── Dispatch table ─────────────────────────────────────────────────────
+# Defined after handlers so name resolution works at module load.
+
+
+def _dispatch_instructions(
+    ctx: DeployContext, _capability: str, targets: list[Path]
+) -> None:
+    _deploy_instructions(ctx, targets)
+
+
+def _dispatch_mcp(ctx: DeployContext, _capability: str, targets: list[Path]) -> None:
+    _deploy_mcp(ctx, targets)
+
+
+_DEPLOY_DISPATCH: dict[str, Callable[[DeployContext, str, list[Path]], None]] = {
+    "instructions": _dispatch_instructions,
+    "skills": _deploy_file_artifacts,
+    "subagents": _deploy_file_artifacts,
+    "prompts": _deploy_file_artifacts,
+    "mcp": _dispatch_mcp,
+}
+
+
 __all__ = [
     "ApplyResult",
     "LinkResult",
     "apply_global",
     "apply_here",
     "compile_mcp_for_agent",
-    "expand_profile",
     "link_artifacts",
     "render_template",
 ]

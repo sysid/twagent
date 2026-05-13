@@ -79,7 +79,7 @@ def _check_capability_mismatches(config: Configuration, report: DoctorReport) ->
     contains that the agent doesn't have a matching capability for.
     """
     logger.debug("doctor._check_capability_mismatches")
-    from twagent.deploy import expand_profile  # avoid cycle
+    from twagent.expansion import expand_profile
 
     for agent_id, agent in config.agents.items():
         if agent.global_profile is None:
@@ -98,12 +98,12 @@ def _check_capability_mismatches(config: Configuration, report: DoctorReport) ->
 def _check_agents_without_global_profile(
     config: Configuration, report: DoctorReport
 ) -> None:
-    """Info: agents with no `global_profile` are deployable only via --here --select."""
+    """Info: agents with no `global_profile` are deployable only via local apply --select."""
     logger.debug("doctor._check_agents_without_global_profile")
     for agent_id, agent in config.agents.items():
         if agent.global_profile is None:
             report.info.append(
-                f"agent {agent_id!r}: no global_profile set — bare "
-                f"`twagent apply` will skip this agent. Use --here --select "
-                f"or attach a global_profile."
+                f"agent {agent_id!r}: no global_profile set — "
+                f"`twagent apply --global` will skip this agent. Use "
+                f"local `apply --select` or attach a global_profile."
             )

@@ -7,15 +7,23 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.markup import escape
 from rich.table import Table
 
 from twagent import __version__
-from twagent.config import ConfigError, load
+from typing import Final
+
+from twagent.config import (
+    EXPANSION_KINDS,
+    ConfigError,
+    FileArtifact,
+    Server,
+    load,
+)
 from twagent.deploy import apply_global, apply_here
 from twagent.diff import compute_diff
 from twagent.doctor import check as doctor_check
@@ -39,7 +47,7 @@ Claude Code, Copilot CLI, Pi, and friends from a single canonical TOML.
   Edit config       :  twagent edit                (or 'edit --init' first time)
   See what's loaded :  twagent agents | profiles | status
   Preview locals    :  twagent apply --select <names> --dry-run
-  Deploy locally    :  twagent apply --select <names>   (default: --here)
+  Deploy locally    :  twagent apply --select <names>   (default: into cwd)
   Deploy globally   :  twagent apply --global           (each agent's global_profile)
   See what changed  :  twagent diff
   Find drift        :  twagent doctor
@@ -52,7 +60,8 @@ Glossary:
   artifact A single skill/subagent/prompt/MCP server, registered by name.
 
   --select takes a mix of profile names AND artifact names.
-  --here (default) vs --global: write to cwd vs canonical agent paths.
+  Default mode writes to cwd via paths.project.*; --global writes to
+  canonical paths.global.* paths.
 """
 
 app = typer.Typer(
@@ -146,28 +155,27 @@ Deploy your resolved configuration to disk.
 
 Two modes:
 
-  --here     (default)  Deploy a CLI-supplied selection to the CURRENT
-                        directory via each agent's `paths.project.*`
-                        joined under cwd. Requires --select. Auto-selects
-                        agents whose capabilities serve at least one kind
-                        in the selection (or use --agent to narrow). This
-                        is what bare `twagent apply --select <names>` does.
+  default (no flag)  Deploy a CLI-supplied selection to the CURRENT
+                     directory via each agent's `paths.project.*` joined
+                     under cwd. Requires --select. Auto-selects agents
+                     whose capabilities serve at least one kind in the
+                     selection (or use --agent to narrow).
 
-  --global              Deploy each agent's `global_profile` to its
-                        `paths.global.*` paths (~/.claude/, ~/.copilot/, ...).
-                        Idempotent.
+  --global           Deploy each agent's `global_profile` to its
+                     `paths.global.*` paths (~/.claude/, ~/.copilot/, ...).
+                     Idempotent.
 
 --select is exhaustive: only the kinds derivable from the selection are
 deployed. `--select e2e-emea` (servers-only profile) writes the MCP file
 and nothing else — no instruction render, no skill symlinks. To deploy
-everything an agent has, use bare `apply` (no --select).
+everything an agent has globally, use `apply --global` (no --select).
 
 --select takes profile names AND/OR artifact names, mixed (skills,
 subagents, prompts, servers, AND instructions are all selectable by name):
 
-  twagent apply --here --select e2e-emea
+  twagent apply --select e2e-emea
                                           # one profile name
-  twagent apply --here --select core,tw-cucumber-to-http,github
+  twagent apply --select core,tw-cucumber-to-http,github
                                           # mix: profile + skill + server
 
 Examples:
@@ -184,44 +192,34 @@ Examples:
   twagent apply --global -s foo,bar          # override globals with this set
 
 Short flags:
-  -G/--global  -H/--here  -a/--agent  -s/--select  -i/--interactive
+  -G/--global  -a/--agent  -s/--select  -i/--interactive
   -n/--dry-run -S/--show-secrets
 """
 
 
 @app.command(help=_APPLY_HELP)
 def apply(
-    here: bool = typer.Option(
-        False,
-        "--here",
-        "-H",
-        help=(
-            "Local mode (default): deploy the --select set to the current "
-            "directory via each agent's paths.project.* joined under cwd. "
-            "Mutually exclusive with --global. This is the default — pass "
-            "explicitly only for clarity."
-        ),
-    ),
     global_mode: bool = typer.Option(
         False,
         "--global",
         "-G",
         help=(
             "Global mode: deploy each agent's `global_profile` to its "
-            "paths.global.* paths. Mutually exclusive with --here."
+            "paths.global.* paths. Default (no flag) deploys the --select "
+            "set to the current directory via paths.project.*."
         ),
     ),
-    agent: Optional[list[str]] = typer.Option(
+    agent: list[str] | None = typer.Option(
         None,
         "--agent",
         "-a",
         help=(
             "Restrict to one or more agents (by id, e.g. 'claude-code'). "
-            "Repeatable. In --here mode, also forces inclusion of all "
+            "Repeatable. In local (default) mode, also forces inclusion of all "
             "capabilities the agent supports (including instructions)."
         ),
     ),
-    select: Optional[str] = typer.Option(
+    select: str | None = typer.Option(
         None,
         "--select",
         "-s",
@@ -229,7 +227,7 @@ def apply(
             "Comma-separated list of profile names AND/OR artifact names. "
             "Each name resolves to either a profile (expanded via `extends`) "
             "or a single artifact (skill/subagent/prompt/server). REQUIRED "
-            "in --here mode (the default); optional in --global mode where "
+            "in local mode (the default); optional in --global mode where "
             "it OVERRIDES each agent's global_profile. "
             "When combined with --interactive, the named items are "
             "PRE-CHECKED in the picker — you can add or remove from there."
@@ -266,14 +264,6 @@ def apply(
         ),
     ),
 ) -> None:
-    if here and global_mode:
-        err_console.print(
-            "[red]Pick one: --global OR --here[/red]\n"
-            "  --global writes to canonical agent paths; --here writes to cwd."
-        )
-        raise typer.Exit(2)
-
-    # --here is the default. Only enter global mode when --global is set.
     here = not global_mode
 
     config = _load_config()
@@ -316,8 +306,9 @@ def apply(
     if here:
         if not select_list:
             err_console.print(
-                "[red]--here requires --select <names> (or --interactive)[/red]\n"
-                "  There is no per-cwd default profile; you must say what to deploy."
+                "[red]Local deploy requires --select <names> (or --interactive)[/red]\n"
+                "  There is no per-cwd default profile; you must say what to deploy. "
+                "Use --global to deploy each agent's global_profile instead."
             )
             raise typer.Exit(2)
         try:
@@ -350,21 +341,15 @@ def apply(
             typer.echo(line)
 
     if result.warnings:
-        from rich.markup import escape
-
         for w in result.warnings:
             err_console.print(f"[yellow]Warning:[/yellow] {escape(w)}")
 
     if not dry_run and result.written:
-        from rich.markup import escape
-
         err_console.print("[green]Wrote:[/green]")
         for path in result.written:
             err_console.print(f"  {escape(path)}")
 
     if result.has_errors:
-        from rich.markup import escape
-
         err_console.print("\n[red]Errors:[/red]")
         for err in result.errors:
             err_console.print(f"  {escape(err)}")
@@ -434,8 +419,8 @@ _STATUS_HELP = """\
 Print every agent's global deployment state.
 
 For each agent: its capabilities, the profile attached as `global_profile`
-(what bare `twagent apply` will deploy), and the mcp_format. Agents with
-no `global_profile` are deployable only via `apply --here --select`.
+(what `twagent apply --global` will deploy), and the mcp_format. Agents
+with no `global_profile` are deployable only via local `apply --select`.
 """
 
 
@@ -451,7 +436,7 @@ def status() -> None:
         table.add_row(
             agent_id,
             ", ".join(agent.capabilities),
-            agent.global_profile or "[dim]— (no default; use --here --select)[/dim]",
+            agent.global_profile or "[dim]— (no default; use local apply --select)[/dim]",
             agent.mcp_format or "—",
         )
     console.print(table)
@@ -534,7 +519,7 @@ Use this to look up the artifact NAMES you'd pass to 'apply --select'.
 @app.command(help=_PROFILES_HELP)
 def profiles() -> None:
     config = _load_config()
-    from twagent.deploy import expand_profile
+    from twagent.expansion import expand_profile
 
     table = Table(title="Profiles")
     table.add_column("Profile")
@@ -549,10 +534,10 @@ def profiles() -> None:
         table.add_row(
             name,
             ", ".join(prof.extends) or "—",
-            ", ".join(expanded["skills"]) or "—",
-            ", ".join(expanded["subagents"]) or "—",
-            ", ".join(expanded["prompts"]) or "—",
-            ", ".join(expanded["servers"]) or "—",
+            ", ".join(expanded.skills) or "—",
+            ", ".join(expanded.subagents) or "—",
+            ", ".join(expanded.prompts) or "—",
+            ", ".join(expanded.servers) or "—",
         )
     console.print(table)
 
@@ -578,20 +563,14 @@ and servers. Use this command to discover the NAMES you'd pass to
 """
 
 
-# Kind → registry attribute. Excludes the per-kind capability/registry
-# split; for artefacts the registry name IS the kind name.
-_ARTEFACT_KINDS: tuple[str, ...] = (
-    "instructions",
-    "skills",
-    "subagents",
-    "prompts",
-    "servers",
-)
+# Kind → registry attribute. For the `artefacts` command we list/lookup
+# across these five registries (same set as EXPANSION_KINDS).
+_ARTEFACT_KINDS: Final[tuple[str, ...]] = EXPANSION_KINDS
 
 
 @app.command(help=_ARTEFACTS_HELP)
 def artefacts(
-    name: Optional[str] = typer.Argument(
+    name: str | None = typer.Argument(
         None,
         help="If given, print details for this artefact instead of listing.",
     ),
@@ -617,12 +596,12 @@ def artefacts(
 
     if name is not None:
         for kind in kinds:
-            registry = getattr(config, kind)
+            registry = config.registry(kind)
             if name in registry:
                 _print_artefact_details(kind, registry[name])
                 return
         err_console.print(f"[red]Unknown artefact:[/red] {name!r}")
-        all_in_scope = sorted({n for k in kinds for n in getattr(config, k)})
+        all_in_scope = sorted({n for k in kinds for n in config.registry(k)})
         if all_in_scope:
             err_console.print(
                 f"  Available in {', '.join(kinds)}: {', '.join(all_in_scope)}"
@@ -635,8 +614,8 @@ def artefacts(
     table.add_column("Source / Type")
     table.add_column("Description")
     for kind in kinds:
-        for art_name, item in getattr(config, kind).items():
-            if kind == "servers":
+        for art_name, item in config.registry(kind).items():
+            if isinstance(item, Server):
                 src_or_type = item.type + (
                     f" ({item.command})" if item.command else ""
                 )
@@ -648,14 +627,16 @@ def artefacts(
     console.print(table)
 
 
-def _print_artefact_details(kind: str, item) -> None:
+def _print_artefact_details(
+    kind: str, item: "FileArtifact | Server"
+) -> None:
     """Print all relevant fields of a single artefact to stdout."""
     table = Table(title=f"{kind}.{item.name}")
     table.add_column("Field")
     table.add_column("Value")
     table.add_row("kind", kind)
     table.add_row("name", item.name)
-    if kind == "servers":
+    if isinstance(item, Server):
         table.add_row("type", item.type)
         if item.command:
             table.add_row("command", item.command)
@@ -781,7 +762,7 @@ def edit(
             "opening it. No-op if the file already exists."
         ),
     ),
-    template: Optional[str] = typer.Option(
+    template: str | None = typer.Option(
         None,
         "--template",
         "-t",
@@ -856,9 +837,9 @@ work_email = "you@example.com"
 #   capabilities    : subset of {instructions, skills, subagents, prompts, mcp}
 #   mcp_format      : required iff "mcp" in capabilities; one of:
 #                     claude-code | copilot-cli | pi | vscode | opencode
-#   global_profile  : optional profile name; what bare `apply` deploys
+#   global_profile  : optional profile name; what `apply --global` deploys
 #   paths.global    : per-capability list of destination paths (always a list)
-#   paths.project   : same shape (used by `apply --here`); instructions may be omitted
+#   paths.project   : same shape (used by local `apply`); instructions may be omitted
 #   vars            : per-agent Jinja context (overrides [common.vars])
 
 [agents.claude-code]
@@ -872,7 +853,7 @@ skills       = ["~/.claude/skills"]
 mcp          = ["~/.claude.json"]
 
 [agents.claude-code.paths.project]
-# When `apply --here` runs, project paths are joined under cwd.
+# When local `apply` runs, project paths are joined under cwd.
 skills = [".claude/skills"]
 mcp    = [".mcp.json"]
 

@@ -108,32 +108,32 @@ class TestResolveSelection:
     def test_single_profile_name(self, selector_config):
         result = resolve_selection(["full"], selector_config)
         # full extends base: parent-first, dedup'd → s1, s2 (skills); srv1 (servers)
-        assert result["skills"] == ["s1", "s2"]
-        assert result["subagents"] == ["r1"]
-        assert result["prompts"] == ["p1"]
-        assert result["servers"] == ["srv1"]
+        assert result.skills == ["s1", "s2"]
+        assert result.subagents == ["r1"]
+        assert result.prompts == ["p1"]
+        assert result.servers == ["srv1"]
 
     def test_single_artifact_name_skill(self, selector_config):
         result = resolve_selection(["s1"], selector_config)
-        assert result["skills"] == ["s1"]
-        assert result["servers"] == []
+        assert result.skills == ["s1"]
+        assert result.servers == []
 
     def test_single_artifact_name_server(self, selector_config):
         result = resolve_selection(["srv1"], selector_config)
-        assert result["servers"] == ["srv1"]
-        assert result["skills"] == []
+        assert result.servers == ["srv1"]
+        assert result.skills == []
 
     def test_mixed_profile_and_artifact(self, selector_config):
         # base profile contributes s1 + srv1; tw-cucumber-style extra adds p1
         result = resolve_selection(["base", "p1"], selector_config)
-        assert result["skills"] == ["s1"]
-        assert result["servers"] == ["srv1"]
-        assert result["prompts"] == ["p1"]
+        assert result.skills == ["s1"]
+        assert result.servers == ["srv1"]
+        assert result.prompts == ["p1"]
 
     def test_dedup_across_inputs(self, selector_config):
         # base contains s1; selecting both base AND s1 should not duplicate
         result = resolve_selection(["base", "s1"], selector_config)
-        assert result["skills"] == ["s1"]
+        assert result.skills == ["s1"]
 
     def test_unknown_name_raises(self, selector_config):
         with pytest.raises(ValueError, match="Unknown name"):
@@ -148,10 +148,8 @@ class TestResolveSelection:
 
     def test_empty_selection_yields_empty_lists(self, selector_config):
         result = resolve_selection([], selector_config)
-        assert result == {
-            "instructions": [],
-            "skills": [],
-            "subagents": [],
-            "prompts": [],
-            "servers": [],
-        }
+        assert result.instructions == []
+        assert result.skills == []
+        assert result.subagents == []
+        assert result.prompts == []
+        assert result.servers == []

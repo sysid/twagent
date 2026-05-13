@@ -66,7 +66,7 @@ def test_missing_artifact_source_reported(base_world):
 
 
 def test_agent_without_global_profile_in_info(tmp_path):
-    """v2: agents with no global_profile are info-level (deployable via --here only)."""
+    """Agents with no global_profile are info-level (deployable via local apply --select only)."""
     config_text = """\
 schema_version = 3
 [agents.c]

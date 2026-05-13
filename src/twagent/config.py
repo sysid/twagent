@@ -5,7 +5,7 @@ Configuration, Common, Agent, Capability, FileArtifact, Server, Profile.
 
 Schema v2 dropped the Scope entity. Global deployment is now driven by
 each agent's `global_profile` attribute; ad-hoc local deployment is
-driven by the CLI (`apply --here --select ...`). See plan file:
+driven by the CLI (`apply --select ...`). See plan file:
 ~/.claude/plans/maybe-we-need-to-cheerful-liskov.md
 
 Module is intentionally one file. Will SPLIT only when LOC pressure or test
@@ -20,7 +20,7 @@ import tomllib
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal, overload
 
 from twagent.interpolate import load_dotenv
 
@@ -28,12 +28,18 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_SCHEMA_VERSION = 3
 
-CAPABILITIES = ("instructions", "skills", "subagents", "prompts", "mcp")
+CAPABILITIES: Final[tuple[str, ...]] = (
+    "instructions",
+    "skills",
+    "subagents",
+    "prompts",
+    "mcp",
+)
 
 # Keys of the profile-expansion dict returned by `expand_profile` /
 # `resolve_selection`. Differs from CAPABILITIES: "mcp" (capability) ↔
 # "servers" (artifact registry name).
-EXPANSION_KINDS: tuple[str, ...] = (
+EXPANSION_KINDS: Final[tuple[str, ...]] = (
     "instructions",
     "skills",
     "subagents",
@@ -45,7 +51,7 @@ Capability = Literal["instructions", "skills", "subagents", "prompts", "mcp"]
 MCP_FORMATS = ("claude-code", "copilot-cli", "pi", "vscode", "opencode")
 
 # Capabilities whose paths.project entry MAY be omitted from per-agent config.
-PROJECT_OPTIONAL_CAPABILITIES = ("instructions",)
+PROJECT_OPTIONAL_CAPABILITIES: Final[tuple[str, ...]] = ("instructions",)
 
 
 class ConfigError(ValueError):
@@ -107,6 +113,29 @@ class Profile:
 
 
 @dataclass(frozen=True)
+class ProfileExpansion:
+    """Result of expanding a profile (or selection) into per-kind member lists.
+
+    Direct attribute access (`expanded.skills`) is preferred. `get(kind)` and
+    `items()` exist for the cases where the kind is a runtime value bound
+    from `EXPANSION_KINDS` or `agent.capabilities`.
+    """
+
+    instructions: list[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
+    subagents: list[str] = field(default_factory=list)
+    prompts: list[str] = field(default_factory=list)
+    servers: list[str] = field(default_factory=list)
+
+    def get(self, key: str) -> list[str]:
+        return getattr(self, key, [])
+
+    def items(self) -> list[tuple[str, list[str]]]:
+        """Iterate (kind, members) pairs in EXPANSION_KINDS order."""
+        return [(k, getattr(self, k)) for k in EXPANSION_KINDS]
+
+
+@dataclass(frozen=True)
 class Configuration:
     schema_version: int
     common: Common
@@ -119,6 +148,32 @@ class Configuration:
     profiles: dict[str, Profile]
     env_file: Path | None = None
     env_vars: dict[str, str] = field(default_factory=dict)
+
+    @overload
+    def registry(self, kind: Literal["servers"]) -> dict[str, Server]: ...
+    @overload
+    def registry(
+        self, kind: Literal["instructions", "skills", "subagents", "prompts"]
+    ) -> dict[str, FileArtifact]: ...
+    @overload
+    def registry(self, kind: str) -> dict[str, FileArtifact] | dict[str, Server]: ...
+
+    def registry(self, kind: str) -> dict[str, FileArtifact] | dict[str, Server]:
+        """Return the artefact registry for `kind` (one of EXPANSION_KINDS).
+
+        Centralises the stringly-typed `getattr(config, kind)` pattern used
+        across cli/deploy/diff/selector. Raises KeyError on unknown kinds —
+        intentional: callers always pass a value from EXPANSION_KINDS, so a
+        bad key is a programming error, not a user input.
+        """
+        registries: dict[str, dict[str, FileArtifact] | dict[str, Server]] = {
+            "instructions": self.instructions,
+            "skills": self.skills,
+            "subagents": self.subagents,
+            "prompts": self.prompts,
+            "servers": self.servers,
+        }
+        return registries[kind]
 
 
 # ─── Loader ─────────────────────────────────────────────────────────────
@@ -187,7 +242,7 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
         raise ConfigError(
             "[[scopes]] blocks are not supported (removed in v2). "
             "Use per-agent `global_profile` for global deployment + "
-            "`twagent apply --here --select <names>` for ad-hoc local."
+            "`twagent apply --select <names>` for ad-hoc local."
         )
 
     config = Configuration(

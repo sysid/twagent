@@ -116,4 +116,4 @@ prompts      = ["adr"]
 servers      = ["atlassian"]
 
 # Schema v3: no [[scopes]] blocks. Globals come from per-agent
-# `global_profile`; ad-hoc local deployment is via `apply --here --select`.
+# `global_profile`; ad-hoc local deployment is via `apply --select`.

@@ -92,13 +92,13 @@ def test_global_apply_deploys_global_profile(real_world_config):
 
 
 def test_bare_apply_defaults_to_here_mode(real_world_config, tmp_path, monkeypatch):
-    """With --here as default, bare `apply` (no --global, no --select) errors
-    on missing --select instead of running a global sync."""
+    """Local-deploy is the default. Bare `apply` (no --global, no --select)
+    errors on missing --select instead of running a global sync."""
     cfg = real_world_config["config"]
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["--config", str(cfg), "apply"])
     assert result.exit_code == 2
-    assert "--here requires --select" in result.output
+    assert "Local deploy requires --select" in result.output
 
 
 def test_apply_is_idempotent(real_world_config):
@@ -106,18 +106,6 @@ def test_apply_is_idempotent(real_world_config):
     runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
     result = runner.invoke(app, ["--config", str(cfg), "apply", "--global", "--dry-run"])
     assert result.exit_code == 0
-
-
-# ─── Mode mutex ─────────────────────────────────────────────────────────
-
-
-def test_global_and_here_mutually_exclusive(real_world_config):
-    cfg = real_world_config["config"]
-    result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--global", "--here", "--select", "bkmr"]
-    )
-    assert result.exit_code == 2
-    assert "Pick one" in result.output
 
 
 # ─── Dry run ────────────────────────────────────────────────────────────
@@ -268,31 +256,31 @@ def test_here_short_flag(real_world_config, tmp_path, monkeypatch):
     project_root = tmp_path / "shortform"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "-H", "-s", "bkmr"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-s", "bkmr"])
     assert result.exit_code == 0, result.output
     assert (project_root / ".claude" / "skills" / "bkmr").is_symlink()
 
 
-# ─── --here mode (NEW in v2) ────────────────────────────────────────────
+# ─── Local mode (default) ──────────────────────────────────────────────
 
 
 def test_here_requires_select(real_world_config, tmp_path, monkeypatch):
     cfg = real_world_config["config"]
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, ["--config", str(cfg), "apply", "--here"])
+    result = runner.invoke(app, ["--config", str(cfg), "apply"])
     assert result.exit_code == 2
-    assert "--here requires --select" in result.output
+    assert "Local deploy requires --select" in result.output
 
 
 def test_here_deploys_to_cwd(real_world_config, tmp_path, monkeypatch):
-    """--here deploys to cwd via paths.project (not paths.global)."""
+    """Local mode (default) deploys to cwd via paths.project (not paths.global)."""
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
     project_root = tmp_path / "myproj"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
     result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--here", "--select", "bkmr"]
+        app, ["--config", str(cfg), "apply", "--select", "bkmr"]
     )
     assert result.exit_code == 0, result.output
     # Skill landed under project root
@@ -302,26 +290,26 @@ def test_here_deploys_to_cwd(real_world_config, tmp_path, monkeypatch):
 
 
 def test_here_creates_target_subdirs(real_world_config, tmp_path, monkeypatch):
-    """--here creates `.claude/skills` if it doesn't exist (explicit user act)."""
+    """Local mode creates `.claude/skills` if it doesn't exist (explicit user act)."""
     cfg = real_world_config["config"]
     project_root = tmp_path / "fresh"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
     result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--here", "--select", "bkmr"]
+        app, ["--config", str(cfg), "apply", "--select", "bkmr"]
     )
     assert result.exit_code == 0, result.output
     assert (project_root / ".claude" / "skills").is_dir()
 
 
 def test_here_with_mcp_profile(real_world_config, tmp_path, monkeypatch):
-    """--here --select <profile-of-servers-only> writes only the project mcp file."""
+    """`--select <profile-of-servers-only>` writes only the project mcp file."""
     cfg = real_world_config["config"]
     project_root = tmp_path / "p"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
     result = runner.invoke(
-        app, ["--config", str(cfg), "apply", "--here", "--select", "github"]
+        app, ["--config", str(cfg), "apply", "--select", "github"]
     )
     assert result.exit_code == 0, result.output
     assert (project_root / ".mcp.json").exists()
@@ -368,14 +356,14 @@ def test_here_warns_when_agent_has_no_project_path_for_needed_cap(
 def test_here_select_servers_with_agent_does_not_render_instructions(
     real_world_config, tmp_path, monkeypatch
 ):
-    """Latent --here bug: same logic under -H + --agent."""
+    """Local mode (default) + --select narrows capabilities to MCP only."""
     cfg = real_world_config["config"]
     project_root = tmp_path / "here-bug"
     project_root.mkdir()
     monkeypatch.chdir(project_root)
     result = runner.invoke(
         app,
-        ["--config", str(cfg), "apply", "-H", "-s", "github", "-a", "claude-code"],
+        ["--config", str(cfg), "apply", "-s", "github", "-a", "claude-code"],
     )
     assert result.exit_code == 0, result.output
     assert (project_root / ".mcp.json").exists()

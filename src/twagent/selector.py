@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 
 from simple_term_menu import TerminalMenu
 
-from twagent.config import EXPANSION_KINDS
+from twagent.config import EXPANSION_KINDS, ProfileExpansion
+from twagent.expansion import expand_profile
 
 if TYPE_CHECKING:
     from twagent.config import Configuration
@@ -72,20 +73,18 @@ def resolve_profile(profile_name: str, kind: str, config: "Configuration") -> li
         profile_name,
         kind,
     )
-    from twagent.deploy import expand_profile  # local import: avoid cycle
-
     if profile_name not in config.profiles:
         avail = ", ".join(sorted(config.profiles)) or "(none defined)"
         raise ValueError(f'Unknown profile "{profile_name}"\n  Available: {avail}')
     if kind not in _KIND_TO_REGISTRY:
         raise ValueError(f"Unknown kind: {kind}. Allowed: {list(_KIND_TO_REGISTRY)}")
     expanded = expand_profile(config, profile_name)
-    return list(expanded.get(kind, []))
+    return list(expanded.get(kind))
 
 
 def resolve_selection(
     names: list[str], config: "Configuration"
-) -> dict[str, list[str]]:
+) -> ProfileExpansion:
     """Polymorphic name resolution for `--select` (NEW in v2).
 
     Each name in the list resolves to either:
@@ -100,13 +99,11 @@ def resolve_selection(
     at config load time, so this function can rely on unambiguous lookup.
     """
     logger.debug("selector.resolve_selection: names=%s", names)
-    from twagent.deploy import expand_profile  # local import: avoid cycle
-
-    out: dict[str, list[str]] = {kind: [] for kind in EXPANSION_KINDS}
+    buckets: dict[str, list[str]] = {kind: [] for kind in EXPANSION_KINDS}
 
     artifact_kind_of: dict[str, str] = {}
-    for kind in out:
-        for n in getattr(config, kind):
+    for kind in buckets:
+        for n in config.registry(kind):
             artifact_kind_of[n] = kind
 
     unknown: list[str] = []
@@ -115,12 +112,12 @@ def resolve_selection(
             expanded = expand_profile(config, name)
             for kind, members in expanded.items():
                 for m in members:
-                    if m not in out[kind]:
-                        out[kind].append(m)
+                    if m not in buckets[kind]:
+                        buckets[kind].append(m)
         elif name in artifact_kind_of:
             kind = artifact_kind_of[name]
-            if name not in out[kind]:
-                out[kind].append(name)
+            if name not in buckets[kind]:
+                buckets[kind].append(name)
         else:
             unknown.append(name)
 
@@ -136,13 +133,13 @@ def resolve_selection(
     logger.debug(
         "selector.resolve_selection: instructions=%d skills=%d subagents=%d "
         "prompts=%d servers=%d",
-        len(out["instructions"]),
-        len(out["skills"]),
-        len(out["subagents"]),
-        len(out["prompts"]),
-        len(out["servers"]),
+        len(buckets["instructions"]),
+        len(buckets["skills"]),
+        len(buckets["subagents"]),
+        len(buckets["prompts"]),
+        len(buckets["servers"]),
     )
-    return out
+    return ProfileExpansion(**buckets)
 
 
 def is_interactive_terminal() -> bool:
