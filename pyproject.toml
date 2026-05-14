@@ -1,6 +1,6 @@
 [project]
 name = "twagent"
-version = "0.2.2"
+version = "0.3.0"
 description = "twagent CLI"
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -82,7 +82,7 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.bumpversion]
-current_version = "0.2.2"
+current_version = "0.3.0"
 commit = true
 tag = false
 tag_name = "v{new_version}"
