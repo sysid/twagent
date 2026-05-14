@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="doc/twagent-logo.png" alt="twagent logo" width="300">
+  <img src="resources/twagent-logo.png" alt="twagent logo" width="300">
 </p>
 
 Unified configuration framework for AI coding agents — Claude Code, Copilot CLI,
