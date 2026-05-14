@@ -204,17 +204,16 @@ def test_select_unknown_name_exits_two(real_world_config):
 
 
 def test_select_preseeds_interactive_picker(real_world_config, monkeypatch):
-    """`--select X --interactive` is no longer mutex; --select pre-checks the picker.
+    """`--select X --interactive` pre-checks the picker.
 
-    We verify the wiring by patching select_interactive to capture its
-    `preselected` kwarg and return a deterministic chosen list.
+    For an artifact name, the expanded preselect set is the artifact itself.
     """
     captured: dict = {}
 
     def fake_picker(items, preselected=None, title=""):
         captured["preselected"] = preselected
         captured["items"] = items
-        return ["bkmr"]  # user accepts "bkmr"
+        return ["bkmr"]
 
     import twagent.cli as cli_mod
 
@@ -236,8 +235,42 @@ def test_select_preseeds_interactive_picker(real_world_config, monkeypatch):
         ],
     )
     assert result.exit_code == 0, result.output
-    # The picker was given the --select set as preselected
     assert captured["preselected"] == {"bkmr"}
+
+
+def test_select_profile_expands_preselect(real_world_config, monkeypatch):
+    """`--select <profile> --interactive` pre-checks the profile's EXPANDED
+    members (skills/servers/instructions), not the literal profile name."""
+    captured: dict = {}
+
+    def fake_picker(items, preselected=None, title=""):
+        captured["preselected"] = preselected
+        return []  # user accepts nothing — that's fine, we only check preselect
+
+    import twagent.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "select_interactive", fake_picker)
+    monkeypatch.setattr(cli_mod, "is_interactive_terminal", lambda: True)
+
+    cfg = real_world_config["config"]
+    # Profile "tw" expands to: AGENT-md (instr) + bkmr (skill) + github (mcp).
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(cfg),
+            "apply",
+            "--global",
+            "--select",
+            "tw",
+            "--interactive",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["preselected"] == {"AGENT-md", "bkmr", "github"}
+    # The profile name itself is NOT in the preselect set.
+    assert "tw" not in captured["preselected"]
 
 
 def test_short_flags_work(real_world_config):

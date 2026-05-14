@@ -31,6 +31,7 @@ from twagent.extractor import extract_from_file
 from twagent.selector import (
     is_interactive_terminal,
     parse_select_value,
+    resolve_selection,
     select_interactive,
 )
 
@@ -280,24 +281,40 @@ def apply(
         if not is_interactive_terminal():
             err_console.print("[red]--interactive requires a TTY[/red]")
             raise typer.Exit(2)
+        # Group by kind, alphabetical within kind. Stable display order helps
+        # muscle memory and makes the returned selection deterministic.
         items: dict[str, str] = {}
-        for n in config.profiles:
+        for n in sorted(config.profiles):
             items[n] = "[profile]"
-        for n in config.instructions:
+        for n in sorted(config.instructions):
             items[n] = "[instruction]"
-        for n in config.skills:
+        for n in sorted(config.skills):
             items[n] = "[skill]"
-        for n in config.subagents:
+        for n in sorted(config.subagents):
             items[n] = "[subagent]"
-        for n in config.prompts:
+        for n in sorted(config.prompts):
             items[n] = "[prompt]"
-        for n in config.servers:
+        for n in sorted(config.servers):
             items[n] = "[mcp]"
-        # When --select is also given, those names are pre-checked in the
-        # picker — twmcp's original `--profile X --interactive` pattern,
-        # generalized here to any --select <names> set.
-        preselected = set(select_list) if select_list else None
-        chosen = select_interactive(items, preselected=preselected)
+        # When --select is also given, pre-check the EXPANDED contents of
+        # any profile in the selection (not just the profile name itself).
+        # This makes `-s tw-claude -i` show the skills/servers the profile
+        # would deploy, ready to be trimmed or extended in one screen.
+        preselected: set[str] | None = None
+        if select_list:
+            try:
+                expanded = resolve_selection(select_list, config)
+            except ValueError as exc:
+                err_console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(2)
+            preselected = set()
+            for kind in EXPANSION_KINDS:
+                preselected.update(getattr(expanded, kind))
+        try:
+            chosen = select_interactive(items, preselected=preselected)
+        except RuntimeError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
         if chosen is None:
             err_console.print("Cancelled.")
             raise typer.Exit(0)

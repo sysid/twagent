@@ -155,11 +155,19 @@ twagent apply -s AGENT-md -a claude-code        # one agent's instructions only
 twagent apply -i                                # pick from a TUI menu
                                                 # of all profiles + artifacts
 twagent apply -s tw-claude -i                   # picker pre-checked with
-                                                # tw-claude's contents — add
-                                                # or remove from there
+                                                # tw-claude's EXPANDED contents
+                                                # (its skills/servers/etc.) —
+                                                # trim or extend from there
 ```
 
-`-i` cancellation (Esc) exits without deploying.
+`-i` uses **fzf** when it is on `$PATH` (requires `fzf >= 0.35` for the
+`load:` event used to apply preselection). Without fzf — or with `TWAGENT_NO_FZF=1` — it falls back to a
+built-in `simple-term-menu` picker. `Esc` cancels without deploying.
+
+When `--select` names a profile, the picker pre-checks the profile's expanded
+members (post-`extends`), not the profile name itself. The returned selection
+is therefore an artifact set frozen at pick time — handy for one-off trims;
+use a profile when you want changes to track future additions.
 
 ### Day-to-day flow
 

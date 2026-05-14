@@ -7,6 +7,10 @@ and servers (the four list-shaped artifact types).
 from __future__ import annotations
 
 import logging
+import os
+import re
+import shutil
+import subprocess
 import sys
 from collections.abc import Set
 from typing import TYPE_CHECKING
@@ -144,6 +148,52 @@ def is_interactive_terminal() -> bool:
     return sys.stdin.isatty()
 
 
+# fzf >= 0.35 introduced the `load:` event used to apply preselection.
+# We use `load:` (not `start:`) because `start:` fires BEFORE stdin is read
+# and `pos()+toggle` has nothing to toggle yet. `load:` fires once after
+# input is fully consumed, when the items exist and can be selected.
+# Older fzf cannot honour the picker's preselect contract, so we refuse to
+# use it.
+_MIN_FZF_VERSION = (0, 35)
+
+
+def _detect_fzf() -> str | None:
+    """Return the fzf executable path if it is installed and recent enough.
+
+    Returns None when fzf is absent or `TWAGENT_NO_FZF=1` is set.
+    Raises RuntimeError when fzf is present but older than 0.41 — twagent
+    will not silently downgrade preselect behaviour.
+    """
+    if os.environ.get("TWAGENT_NO_FZF") == "1":
+        return None
+    path = shutil.which("fzf")
+    if not path:
+        return None
+    try:
+        proc = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("fzf --version probe failed: %s — using fallback", exc)
+        return None
+    m = re.match(r"\s*(\d+)\.(\d+)", proc.stdout)
+    if not m:
+        logger.warning("unparseable fzf --version output: %r — using fallback", proc.stdout)
+        return None
+    version = (int(m.group(1)), int(m.group(2)))
+    if version < _MIN_FZF_VERSION:
+        raise RuntimeError(
+            f"fzf {version[0]}.{version[1]} is too old; twagent --interactive "
+            f"requires fzf >= {_MIN_FZF_VERSION[0]}.{_MIN_FZF_VERSION[1]}. "
+            f"Upgrade fzf, or set TWAGENT_NO_FZF=1 to use the built-in fallback."
+        )
+    return path
+
+
 def select_interactive(
     items: dict[str, str],
     preselected: "Set[str] | None" = None,
@@ -151,13 +201,102 @@ def select_interactive(
 ) -> list[str] | None:
     """Multi-select picker. `items` maps name → label suffix (e.g. type).
 
-    Returns chosen names; [] if user accepted nothing; None if cancelled.
+    Uses fzf when available (better fuzzy filter UX); falls back to
+    simple-term-menu otherwise. Both backends honour the same contract:
+    returns chosen names; [] if the user accepted nothing; None if cancelled.
     """
     logger.debug(
         "selector.select_interactive: items=%d preselected=%d",
         len(items),
         len(preselected) if preselected else 0,
     )
+    fzf_path = _detect_fzf()
+    if fzf_path:
+        return _select_with_fzf(fzf_path, items, preselected, title)
+    return _select_with_simple_term_menu(items, preselected, title)
+
+
+def _select_with_fzf(
+    fzf_path: str,
+    items: dict[str, str],
+    preselected: "Set[str] | None",
+    title: str,
+) -> list[str] | None:
+    """fzf-backed picker. Multi-select, preselect via `start:` event."""
+    if not items:
+        return []
+    names = list(items.keys())
+    width = max(len(n) for n in names)
+    lines = [f"{n.ljust(width)}  {items[n]}" for n in names]
+    stdin_payload = "\n".join(lines)
+
+    binds = ["ctrl-a:select-all", "ctrl-d:deselect-all"]
+    if preselected:
+        ops: list[str] = []
+        for i, name in enumerate(names):
+            if name in preselected:
+                # fzf positions are 1-based in pos(N)
+                ops.append(f"pos({i + 1})")
+                ops.append("toggle")
+        if ops:
+            # `load:` (not `start:`) — see _MIN_FZF_VERSION comment above.
+            # Append `first` so the cursor lands at the top of the list
+            # instead of on the last toggled item (which scrolls the view).
+            ops.append("first")
+            binds.append("load:" + "+".join(ops))
+
+    # Use fzf's own keybindings in the header, not simple-term-menu's
+    # (the default `title` references Space/Enter/Esc which is wrong for fzf).
+    header = "Tab=toggle, Enter=confirm, Esc=cancel, Ctrl-A=all, Ctrl-D=none"
+    args = [
+        fzf_path,
+        "--multi",
+        "--no-sort",
+        "--layout=reverse",
+        "--height=90%",
+        "--border",
+        "--prompt=select> ",
+        f"--header={header}",
+        "--bind=" + ",".join(binds),
+    ]
+    try:
+        result = subprocess.run(
+            args, input=stdin_payload, text=True, capture_output=True, check=False
+        )
+    except OSError as exc:
+        logger.warning("fzf invocation failed: %s — falling back", exc)
+        return _select_with_simple_term_menu(items, preselected, title)
+
+    # fzf exit codes: 0 ok, 1 no match, 2 error, 130 interrupt (Esc/Ctrl-C).
+    if result.returncode == 130:
+        return None
+    if result.returncode == 1:
+        return []
+    if result.returncode != 0:
+        logger.warning(
+            "fzf exited %d: %s — treating as cancel",
+            result.returncode,
+            result.stderr.strip(),
+        )
+        return None
+
+    chosen_set: set[str] = set()
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        token = line.split(None, 1)[0]
+        if token in items:
+            chosen_set.add(token)
+    # Return items in display order (not click order) for determinism.
+    return [n for n in names if n in chosen_set]
+
+
+def _select_with_simple_term_menu(
+    items: dict[str, str],
+    preselected: "Set[str] | None",
+    title: str,
+) -> list[str] | None:
+    """Original picker — used when fzf is unavailable or disabled."""
     names = list(items.keys())
     labels = [f"{n} {items[n]}".strip() for n in names]
     pre_labels: list[str] | None = None
@@ -179,4 +318,5 @@ def select_interactive(
         return None
     if isinstance(chosen, int):
         chosen = (chosen,)
-    return [names[i] for i in chosen]
+    # Sort by index so return order matches display order (deterministic).
+    return [names[i] for i in sorted(chosen)]
