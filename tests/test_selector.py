@@ -183,7 +183,9 @@ class TestFzfBackend:
         """
         monkeypatch.delenv("TWAGENT_NO_FZF", raising=False)
         monkeypatch.setattr(selector.shutil, "which", lambda name: "/fake/fzf")
-        version_proc = SimpleNamespace(stdout=f"{version} (brew)\n", returncode=0, stderr="")
+        version_proc = SimpleNamespace(
+            stdout=f"{version} (brew)\n", returncode=0, stderr=""
+        )
         results = [version_proc] + list(run_results or [])
         calls: list[dict] = []
 

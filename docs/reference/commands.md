@@ -1,0 +1,204 @@
+# Reference — Commands
+
+Every command, every flag, every exit code. See [Configuration](config.md)
+for TOML schema.
+
+## Global flags
+
+These apply to every subcommand:
+
+| Long | Short | Effect |
+|---|---|---|
+| `--config <path>` | `-c` | Use this config instead of `~/.config/twagent/config.toml`. |
+| `--verbose` | `-v` | Debug logging via `RichHandler` to stderr. |
+
+## `apply` — deploy resolved configuration
+
+The main command. Two modes; `--here` (local) is the default.
+
+| Long | Short | Effect |
+|---|---|---|
+| _(no flag — default)_ | — | Local deploy: write `--select` into cwd via `paths.project.*`. |
+| `--global` | `-G` | Global deploy: write each agent's `global_profile` to `paths.global.*`. |
+| `--agent <id>` | `-a` | Repeatable. Restrict to specific agents. |
+| `--select <names>` | `-s` | CSV of profile names AND/OR artifact names. `none` deploys empty. |
+| `--interactive` | `-i` | Open a terminal picker. Honors `--select` as pre-checked items (expanded). |
+| `--dry-run` | `-n` | Show the plan, write nothing. Secrets masked unless `--show-secrets`. |
+| `--show-secrets` | `-S` | Reveal `${VAR}`-resolved values in dry-run / diff output. |
+
+### Examples
+
+```bash
+twagent apply --global                     # everything globally, idempotent
+twagent apply --global -n                  # preview, secrets masked
+twagent apply --global -a claude-code      # one agent globally
+twagent apply --global -s e2e-emea         # swap MCP env for the day, all agents
+twagent apply --global -s e2e-emea -a copilot-cli  # one agent, MCP only
+twagent apply -s tw-claude                 # local: deploy a profile into cwd
+twagent apply -s core,tw-cucumber-to-http  # local: profile + extra skill
+twagent apply -i                           # local: TUI picker
+twagent apply -s tw-claude -i              # picker pre-checked w/ profile contents
+```
+
+### How `--select` works
+
+- **Exhaustive by kind.** Only the artifact kinds derivable from the
+  selection are deployed. Selecting a servers-only profile rewrites the
+  MCP file and nothing else.
+- **Polymorphic.** Each name resolves to either a profile (expanded via
+  `extends`) or a single artifact.
+- **`none`** is reserved: `--select none` deploys an empty set (useful
+  for "remove everything for this agent").
+
+### Interactive picker
+
+- Uses **fzf** when available (`fzf >= 0.35` required for preselect).
+- Fuzzy-filter, multi-select. Keys: `Tab` toggle, `Enter` confirm,
+  `Esc` cancel, `Ctrl-A` all, `Ctrl-D` none.
+- Falls back to `simple-term-menu` if fzf is missing or
+  `TWAGENT_NO_FZF=1` is set.
+- When `--select` names a profile, the picker pre-checks the profile's
+  **expanded members** (post-`extends`), not the profile name itself.
+- Return order is stable: items come back in display order regardless of
+  click order.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (or `--dry-run` completed). |
+| 2 | Invalid flags / unknown names / config errors. |
+
+---
+
+## `diff` — show pending changes
+
+Read-only. Shows what `apply --global` would change between config and
+on-disk state.
+
+```bash
+twagent diff
+twagent diff -a claude-code     # one agent
+twagent diff -S                 # reveal secret values
+```
+
+Equivalent to `apply --global --dry-run` for the comparison subset.
+
+---
+
+## `status` — per-agent global deployment view
+
+Read-only. For each agent shows: capabilities, `global_profile`, and the
+canonical paths. Quick "what's wired up?" check.
+
+```bash
+twagent status
+```
+
+---
+
+## `agents` — list agents
+
+Read-only. For each agent: id, capabilities, paths, vars.
+
+```bash
+twagent agents          # human-readable table
+twagent agents -j       # JSON (machine-readable)
+```
+
+---
+
+## `profiles` — list profiles
+
+Read-only. Each profile with its `extends`-expanded contents per kind
+(instructions, skills, subagents, prompts, servers).
+
+```bash
+twagent profiles
+```
+
+Useful for verifying that profile composition does what you expect.
+
+---
+
+## `artefacts` — list or inspect artifacts
+
+Read-only. Lists every artifact across all registries; optionally narrow
+by kind or inspect one by name.
+
+```bash
+twagent artefacts                          # everything
+twagent artefacts --skills                 # just skills
+twagent artefacts --servers --instructions # combine filters
+twagent artefacts bkmr-memory              # details for one artifact
+```
+
+---
+
+## `doctor` — health check
+
+Read-only. Reports problems:
+
+- **errors** (exit 1): dangling symlinks under agent dirs, registered
+  artifacts whose `source` is missing, profile references that don't resolve.
+- **info** (exit 0): silently-skipped profile entries (e.g. a subagent
+  in a profile deployed to an agent without `subagents` capability).
+
+```bash
+twagent doctor
+```
+
+| Exit | Meaning |
+|---|---|
+| 0 | No errors. (Info messages still possible.) |
+| 1 | One or more errors found. |
+
+---
+
+## `extract` — migrate an existing MCP JSON
+
+One-shot helper. Converts an existing per-agent MCP JSON file to canonical
+TOML on stdout. Auto-detects wrapper formats (`mcpServers` / `servers` /
+`mcp.servers`). Secret-looking keys (`TOKEN`, `KEY`, `PASSWORD`, ...) are
+emitted as `${VAR}` placeholders, not literal values.
+
+```bash
+twagent extract ~/.claude.json                          # to stdout
+twagent extract ~/.claude.json >> ~/.config/twagent/config.toml
+```
+
+Edit the appended block for duplicate names before saving.
+
+---
+
+## `edit` — open the config (or a template)
+
+```bash
+twagent edit                       # open config in $EDITOR
+twagent edit --init                # bootstrap a starter config, then open
+twagent edit --template AGENT-md   # open the source file of an instruction
+twagent edit -t AGENT-md           # same, short form
+```
+
+`--init` is a no-op if the config already exists. `--init` and `--template`
+are mutually exclusive.
+
+`$EDITOR` falls back to `vi`.
+
+---
+
+## `version` — print the installed version
+
+```bash
+twagent version
+```
+
+---
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `EDITOR` | Used by `twagent edit`. Default: `vi`. |
+| `TWAGENT_NO_FZF` | If `1`, force the simple-term-menu fallback even when fzf is installed. |
+| (any `${VAR}` in MCP `env` / `headers`) | Resolved at deploy time. See [Configuration § Interpolation](config.md#interpolation--secrets). |

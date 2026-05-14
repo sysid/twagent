@@ -961,27 +961,17 @@ skills       = ["bkmr-memory"]
 # servers     = ["github", "atlassian"]
 
 
-# ─── Scopes: deployment bindings ───────────────────────────────────────
-# Each scope binds one profile to one or more agents.
-#   - root unset → global scope (uses paths.global)
-#   - root set   → project scope (uses paths.project joined under root)
-#                  Skipped with warning if root does not exist on disk.
-#   - enabled = false → skipped silently by `apply` and `diff`;
-#                       still listed by `status` / `scopes` / `doctor`.
-# Cross-scope rule: same (agent, root) pair MUST appear in at most one
-# enabled scope (would otherwise cause symlink churn).
-
-[[scopes]]
-name    = "global"
-profile = "minimal"
-agents  = ["claude-code"]
-
-# [[scopes]]
-# name    = "project:my-repo"
-# profile = "minimal"
-# agents  = ["claude-code"]
-# root    = "~/dev/work/my-repo"
-# enabled = true
+# ─── Deployment ────────────────────────────────────────────────────────
+# v3 has no [[scopes]] block. Two modes instead:
+#
+#   global  Each agent's `global_profile` (above) is deployed by
+#             twagent apply --global
+#           Idempotent. Writes to paths.global.*.
+#
+#   local   Ad-hoc per-cwd deploy with an explicit selection:
+#             cd ~/dev/myrepo
+#             twagent apply --select <profile-or-artifact-names> -a <agent>
+#           Writes under cwd via paths.project.*.
 """
 
 

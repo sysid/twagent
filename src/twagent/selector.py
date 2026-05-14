@@ -182,7 +182,9 @@ def _detect_fzf() -> str | None:
         return None
     m = re.match(r"\s*(\d+)\.(\d+)", proc.stdout)
     if not m:
-        logger.warning("unparseable fzf --version output: %r — using fallback", proc.stdout)
+        logger.warning(
+            "unparseable fzf --version output: %r — using fallback", proc.stdout
+        )
         return None
     version = (int(m.group(1)), int(m.group(2)))
     if version < _MIN_FZF_VERSION:
