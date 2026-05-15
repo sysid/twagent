@@ -143,10 +143,12 @@ the *set* of skills in the profile.)
 
 ### What happens to files that were deployed but are no longer in the profile?
 
-`apply` writes the current state; it does not clean up. Use `doctor` to
-spot dangling symlinks (artifacts no longer in any profile but still in
-the agent's directory) and remove them by hand. A future flag may automate
-this — track issues for status.
+`apply` syncs the target directory to match the current state: any
+twagent-managed symlink in the agent's capability dir whose name is no
+longer present in `sources` is removed automatically. Real files and
+directories you placed by hand are never touched (they're flagged as
+`skipped_real`). `doctor` still surfaces broken symlinks created out of
+band — those aren't part of `apply`'s sync.
 
 ### Does twagent ever touch the agent's data files?
 

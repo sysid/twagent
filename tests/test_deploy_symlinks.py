@@ -45,14 +45,55 @@ class TestSymlinkHygiene:
         assert (target_dir / "foo").resolve() == new.resolve()
         assert "foo" in result.relinked
 
-    def test_warns_on_dangling_symlink_left_behind(self, tmp_path):
+    def test_removes_broken_orphan_symlink(self, tmp_path):
         target_dir = tmp_path / "target"
         target_dir.mkdir()
         (target_dir / "ghost").symlink_to(tmp_path / "missing")
-        # We only deploy "foo"; the unrelated "ghost" link is dangling.
+        # We only deploy "foo"; the unrelated "ghost" link is an orphan.
         src = _make_source(tmp_path)
         result = link_artifacts({"foo": src}, target_dir)
-        assert "ghost" in result.dangling
+        assert "ghost" in result.removed
+        assert not (target_dir / "ghost").is_symlink()
+        assert not (target_dir / "ghost").exists()
+
+    def test_removes_working_orphan_symlink(self, tmp_path):
+        # Real-world case: a previously-deployed skill is removed from the
+        # registry/profile. Its source file still exists on disk, but its
+        # name no longer appears in `sources` — the symlink must go, the
+        # source file must stay.
+        stale_src = _make_source(tmp_path, "stale")
+        live_src = _make_source(tmp_path, "live")
+        target_dir = tmp_path / "target"
+        target_dir.mkdir()
+        (target_dir / "stale").symlink_to(stale_src)
+        result = link_artifacts({"live": live_src}, target_dir)
+        assert "stale" in result.removed
+        assert not (target_dir / "stale").is_symlink()
+        assert stale_src.exists()  # source file is untouched
+        assert (target_dir / "live").resolve() == live_src.resolve()
+
+    def test_does_not_remove_real_files_or_dirs(self, tmp_path):
+        src = _make_source(tmp_path)
+        target_dir = tmp_path / "target"
+        target_dir.mkdir()
+        real_file = target_dir / "manual.md"
+        real_file.write_text("hand-placed")
+        real_dir = target_dir / "manual_dir"
+        real_dir.mkdir()
+        result = link_artifacts({"foo": src}, target_dir)
+        assert real_file.exists() and real_file.read_text() == "hand-placed"
+        assert real_dir.is_dir()
+        assert "manual.md" not in result.removed
+        assert "manual_dir" not in result.removed
+
+    def test_dry_run_does_not_remove_orphans(self, tmp_path):
+        stale_src = _make_source(tmp_path, "stale")
+        target_dir = tmp_path / "target"
+        target_dir.mkdir()
+        (target_dir / "stale").symlink_to(stale_src)
+        result = link_artifacts({}, target_dir, dry_run=True)
+        assert "stale" in result.removed
+        assert (target_dir / "stale").is_symlink()  # still on disk
 
     def test_skips_real_non_symlink_silently(self, tmp_path):
         src = _make_source(tmp_path)

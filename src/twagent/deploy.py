@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,7 +49,7 @@ class LinkResult:
     created: list[str] = field(default_factory=list)
     kept: list[str] = field(default_factory=list)
     relinked: list[str] = field(default_factory=list)
-    dangling: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
     skipped_real: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -153,8 +152,10 @@ def link_artifacts(
 
     if target_dir.exists():
         for entry in target_dir.iterdir():
-            if entry.is_symlink() and not entry.exists() and entry.name not in sources:
-                result.dangling.append(entry.name)
+            if entry.is_symlink() and entry.name not in sources:
+                if not dry_run:
+                    entry.unlink()
+                result.removed.append(entry.name)
 
     for name, source in sources.items():
         target = target_dir / name
@@ -571,12 +572,12 @@ def _deploy_file_artifacts(
                 result.dry_run_log.append(f"symlink {label}")
             else:
                 result.written.append(label)
-        for warning_name in link_result.dangling:
-            msg = (
-                f"{agent.id}/{capability}: dangling link at {target_dir / warning_name}"
-            )
-            result.warnings.append(msg)
-            warnings.warn(msg, UserWarning, stacklevel=2)
+        for name in link_result.removed:
+            label = f"removed {agent.id}/{capability}/{name} ← {target_dir / name}"
+            if ctx.dry_run:
+                result.dry_run_log.append(label)
+            else:
+                result.written.append(label)
         for err in link_result.errors:
             result.errors.append(f"{agent.id}/{capability}: {err}")
 
