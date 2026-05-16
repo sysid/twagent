@@ -5,9 +5,6 @@
 Unified configuration framework for AI coding agents — Claude Code, Copilot CLI,
 Pi, VS Code, opencode. **One canonical TOML, one CLI, two deploy modes.**
 
-Replaces `twmcp` (MCP servers only) and `devops-binx/agent/render.py`
-(instructions + skills) — both in a single TOML now.
-
 ## What you get
 
 - **One config** at `~/.config/twagent/config.toml` describes every skill,
@@ -15,8 +12,7 @@ Replaces `twmcp` (MCP servers only) and `devops-binx/agent/render.py`
 - **One CLI** (`twagent apply`) renders Jinja templates, symlinks file
   artifacts, and compiles MCP JSON in each agent's native shape.
 - **Two deploy modes**: globally (each agent's default profile to
-  `~/.claude/`, `~/.copilot/`, etc.) or locally (a CLI-supplied selection
-  into the current directory).
+  `~/.claude/`, `~/.copilot/`, etc.) or locally (into the current directory).
 
 ```sh
 twagent apply --global                          # sync everything globally
@@ -29,7 +25,7 @@ twagent apply --global -s e2e-emea -a copilot-cli  # one agent only
 
 ```
   ┌──────────────┐    ┌─────────────┐
-  │  Registries  │ →  │   Profiles  │ →  apply (local | --global)
+  │  Registries  │ →  │   Profiles  │ →  apply (local | global)
   │              │    │ (composable │        │
   │ instructions │    │   bundles)  │        ▼
   │ skills       │    │             │   per-agent paths
