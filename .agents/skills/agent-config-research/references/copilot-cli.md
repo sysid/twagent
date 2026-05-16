@@ -10,7 +10,10 @@ Last verified: 2026-05-16. Re-verify before writing report cells.
 - Skills: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills>
 - Custom agents: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli>
 - Custom instructions: <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions>
-- CLI reference (flags): <https://docs.github.com/en/copilot/reference/cli-commands/copilot>
+
+Note: the prior CLI reference URL `/reference/cli-commands/copilot` 404s as of
+2026-05-16. The `--agent` flag is documented inline on the custom-agents page;
+no replacement reference page found.
 
 ## Known-current paths
 
@@ -22,16 +25,23 @@ Last verified: 2026-05-16. Re-verify before writing report cells.
 
 ## Things to capture in the notes column
 
-- **Cross-agent compatibility**: Copilot CLI deliberately reads `.claude/skills/`
-  and `CLAUDE.md` / `GEMINI.md` so users don't have to duplicate config.
-- **Skill folder requirement**: must contain a `SKILL.md`; directory name
-  lowercase-with-hyphens.
-- **Nested `AGENTS.md`** is read (directory-scoped context).
+- **Cross-agent compatibility (skills)**: Copilot CLI explicitly reads
+  `.claude/skills/` and `.agents/skills/` for cross-agent reuse. The skills
+  page does **not** mention `CLAUDE.md`/`GEMINI.md` — those are instructions,
+  not skills.
+- **Cross-agent compatibility (instructions)**: `CLAUDE.md` and `GEMINI.md`
+  are accepted but **only at the repo root**.
+- **Skill folder requirement**: must contain a `SKILL.md` (case-sensitive);
+  directory name lowercase-with-hyphens.
+- **Nested `AGENTS.md`** is read as additional (lower-weight) context; root
+  `AGENTS.md` is the primary.
 - **`.github/instructions/**/*.instructions.md`** with an `applyTo:` glob in
-  frontmatter — scoped instructions.
-- **Env var**: `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` adds extra instruction dirs.
-- **Agent invocation**: `/agent`, `copilot --agent <name>`, or description
-  match. User-scope agents win on name conflict.
+  frontmatter — scoped instructions. `AGENTS.md` itself does NOT use `applyTo:`.
+- **Env var**: `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` adds extra dirs scanned for
+  `AGENTS.md` and `.github/instructions/**/*.instructions.md`.
+- **Agent invocation**: `/agent` (interactive picker), explicit name in
+  prompt, description match, or `copilot --agent <name>`. User-scope agents
+  win on name conflict.
 
 ## Search queries that have worked
 
