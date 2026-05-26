@@ -39,6 +39,35 @@ and materialises it onto disk in whatever shape each AI coding agent expects:
   (global *and* per-project paths), and one optional `global_profile` —
   the default loadout deployed by `apply --global`.
 
+### The `global_profile` concept
+
+Each agent block can set `global_profile = "<profile-name>"`. This is the
+single most important field for understanding what an agent gets by default:
+
+1. `twagent apply --global` iterates over all agents that have a `global_profile`.
+2. For each, it resolves that profile's full `extends` chain (depth-first,
+   parent-first, first-occurrence wins on duplicates).
+3. The resulting set of instructions, skills, subagents, prompts, and servers
+   is deployed to the agent's `paths.global.*` locations.
+
+This lets you share building blocks (profiles like `core`, `pr_review`,
+`web_research`) across agents while giving each agent a distinct top-level
+profile that selects which subsets apply:
+
+```toml
+[agents.claude-code]
+global_profile = "tw-claude"      # Claude gets everything
+
+[agents.copilot-cli]
+global_profile = "tw-copilot"     # Copilot gets the same, minus writing tools
+
+[agents.pi]
+global_profile = "tw-pi"          # Pi gets a lighter set (no BMW skills)
+```
+
+If an agent has **no** `global_profile`, `apply --global` skips it entirely.
+You can still deploy to it via `--select` + `--agent`.
+
 ## The two deploy modes
 
 | Mode | Trigger | What it writes |

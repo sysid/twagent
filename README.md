@@ -38,8 +38,38 @@ twagent apply --global -s e2e-emea -a copilot-cli  # one agent only
 - **Artifacts** live in registries — globally unique `name` + `source` path.
 - **Profiles** bundle artifact references, composable via `extends`.
 - **Agents** declare capabilities and per-kind paths (global *and* per-project).
+- **`global_profile`** is the bridge: each agent names exactly one profile as
+  its default loadout. When you run `twagent apply --global`, the agent's
+  `global_profile` is resolved (including all `extends` chains) and the
+  resulting artifacts are deployed to the agent's `paths.global.*` locations.
 - **`--select`** is polymorphic (profile or artifact names, mixed) and
   exhaustive (only kinds in the selection deploy).
+
+### How `global_profile` works
+
+```toml
+[agents.copilot-cli]
+global_profile = "tw-copilot"   # ← this is the default loadout
+
+[profiles.tw-copilot]
+extends      = ["core", "pr_review", "web_research"]
+instructions = ["AGENT-md"]
+
+[profiles.core]
+skills = ["bkmr-memory", "twmux", "skill-creator", "tw-comprehend"]
+
+[profiles.pr_review]
+skills = ["tw-review", "tw-add-pr-review", "tw-check-pr"]
+```
+
+Running `twagent apply --global` resolves the full `extends` tree and deploys
+all referenced skills, instructions, and servers to the agent's global paths.
+Each agent can have a **different** `global_profile`, so Claude, Copilot, and
+Pi can share profiles (via `extends`) while each carrying a distinct default
+set.
+
+Without a `global_profile`, `apply --global` skips that agent entirely — it
+only deploys agents that declare one.
 
 ## Install
 
