@@ -20,7 +20,7 @@ make install
 Verify:
 
 ```bash
-twagent version
+twagent --version
 ```
 
 ## Step 2 — Bootstrap the config

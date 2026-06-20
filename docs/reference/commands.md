@@ -11,6 +11,7 @@ These apply to every subcommand:
 |---|---|---|
 | `--config <path>` | `-c` | Use this config instead of `~/.config/twagent/config.toml`. |
 | `--verbose` | `-v` | Debug logging via `RichHandler` to stderr. |
+| `--version` | — | Print the installed version and exit (eager; ignores config). |
 
 ## `apply` — deploy resolved configuration
 
@@ -222,10 +223,13 @@ are mutually exclusive.
 
 ---
 
-## `version` — print the installed version
+## `--version` — print the installed version
+
+A global eager flag (not a subcommand). Prints the version and exits before
+config is loaded.
 
 ```bash
-twagent version
+twagent --version
 ```
 
 ---

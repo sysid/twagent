@@ -10,10 +10,15 @@ from twagent.config import load
 runner = CliRunner()
 
 
-def test_version_command():
-    result = runner.invoke(app, ["version"])
+def test_version_flag():
+    result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert __version__ in result.stdout
+
+
+def test_version_subcommand_removed():
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code != 0  # no longer a subcommand
 
 
 def test_init_stub_config_is_valid_v3(tmp_path: Path):

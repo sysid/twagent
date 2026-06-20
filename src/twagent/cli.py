@@ -88,6 +88,14 @@ class _GlobalOptions:
 _OPTS = _GlobalOptions()
 
 
+def _version_callback(value: bool) -> None:
+    # Eager: print and exit before any subcommand runs (and before config load),
+    # so `twagent --version` works even with no/invalid config present.
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
 @app.callback()
 def _main(
     config: Path = typer.Option(
@@ -109,6 +117,13 @@ def _main(
             "Shows which subsystem (config/deploy/mcp/...) did what, with "
             "timestamps. Useful when something is silently misbehaving."
         ),
+    ),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Print the installed twagent version and exit.",
+        callback=_version_callback,
+        is_eager=True,
     ),
 ) -> None:
     """twagent — unified AI-agent configuration framework."""
@@ -141,14 +156,6 @@ def _load_config():
     except (ConfigError, FileNotFoundError) as exc:
         err_console.print(f"[red]Config error:[/red] {exc}")
         raise typer.Exit(2)
-
-
-# ─── version ────────────────────────────────────────────────────────────
-
-
-@app.command(help="Print the installed twagent version and exit.")
-def version() -> None:
-    typer.echo(__version__)
 
 
 # ─── apply ──────────────────────────────────────────────────────────────
