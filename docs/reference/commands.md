@@ -97,6 +97,41 @@ twagent status
 
 ---
 
+## `info` — deployed config at cwd
+
+Read-only. Shows what is *actually deployed on disk* for the current
+directory. **By default it scans only the local layer** (`cwd/paths.project.*`)
+— the "what's live HERE" view. Pass `--global` to also include the global layer
+(`paths.global.*`, e.g. `~/.claude`). Unlike `status`/`diff` (config-driven,
+globals only), `info` reads disk reality and tags every entry:
+
+- `managed` — symlink resolves to a known artifact source (artifact name shown)
+- `unmanaged` — entry present but not deployed by twagent
+- `⚠ dangling` — broken symlink
+
+Instructions are reported present/absent (the rendered file's source name is
+not recoverable from disk). MCP files are shown as raw content. Provenance is
+the **layer** (global vs local); the deploying profile is not recoverable from
+disk and is not shown. Exits 0 on success (drift never fails it); an unknown
+`-a` agent id is a usage error and exits 2 with the list of valid agents.
+
+`~/.claude.json` is **never shown** — it is Claude Code's own state file, not a
+twagent artifact.
+
+```bash
+twagent info                    # local layer only (default)
+twagent info --global           # also include the global layer
+twagent info -a claude-code     # one agent (repeatable)
+twagent info --json             # machine-readable
+```
+
+> **⚠ Security:** `info` prints MCP files **verbatim, including resolved
+> `${VAR}` secrets** (API keys, tokens). This is intentional — full content for
+> human inspection — and deviates from `diff`/`apply`, which redact by default.
+> Don't paste `info` output into issues or share the scrollback.
+
+---
+
 ## `agents` — list agents
 
 Read-only. For each agent: id, capabilities, paths, vars.

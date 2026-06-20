@@ -12,6 +12,8 @@ import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.markup import escape
+from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
 
 from twagent import __version__
@@ -28,6 +30,7 @@ from twagent.deploy import apply_global, apply_here
 from twagent.diff import compute_diff
 from twagent.doctor import check as doctor_check
 from twagent.extractor import extract_from_file
+from twagent.info import InfoReport, Section, collect_info
 from twagent.selector import (
     is_interactive_terminal,
     parse_select_value,
@@ -458,6 +461,134 @@ def status() -> None:
             agent.mcp_format or "—",
         )
     console.print(table)
+
+
+# ─── info ───────────────────────────────────────────────────────────────
+
+
+_INFO_HELP = """\
+Show the deployed agent config for the CURRENT directory.
+
+By default scans only the LOCAL layer (cwd/paths.project.*) — the
+"what's live HERE" view. Pass --global to ALSO include the global layer
+(paths.global.*, e.g. ~/.claude, ~/.copilot).
+
+Every entry is tagged:
+
+  managed    symlink resolves to a known artifact source
+  unmanaged  entry not deployed by twagent
+  dangling   broken symlink
+
+Read-only; never writes; always exits 0. Use --json for scripting.
+Note: ~/.claude.json is never shown (it is Claude Code's own state file,
+not a twagent artifact).
+
+SECURITY: MCP files are printed VERBATIM, including resolved ${VAR}
+secrets (API keys, tokens). This is intentional (full content for human
+inspection) and deviates from `diff`/`apply`, which redact by default.
+Do not paste `info` output into issues or share your terminal scrollback.
+"""
+
+_STATUS_STYLE = {
+    "managed": "green",
+    "unmanaged": "yellow",
+    "dangling": "red",
+}
+
+
+@app.command(help=_INFO_HELP)
+def info(
+    agent: list[str] | None = typer.Option(
+        None,
+        "--agent",
+        "-a",
+        help="Restrict to one or more agents (by id). Repeatable.",
+    ),
+    global_mode: bool = typer.Option(
+        False,
+        "--global",
+        "-G",
+        help="Also include the global layer (paths.global.*). Default: local only.",
+    ),
+    output_json: bool = typer.Option(
+        False,
+        "--json",
+        "-j",
+        help="Emit machine-parseable JSON instead of the Rich view.",
+    ),
+) -> None:
+    config = _load_config()
+    if agent:
+        unknown = [a for a in agent if a not in config.agents]
+        if unknown:
+            err_console.print(
+                f"[red]Unknown agent(s):[/red] {', '.join(unknown)}"
+            )
+            err_console.print(f"  Available: {', '.join(sorted(config.agents))}")
+            raise typer.Exit(2)
+    report = collect_info(
+        config, Path.cwd(), agent_filter=agent, include_global=global_mode
+    )
+    if output_json:
+        typer.echo(json.dumps(report.as_dict(), indent=2))
+        return
+    _render_info(report)
+
+
+def _render_info(report: InfoReport) -> None:
+    console.print(
+        Panel(
+            f"twagent info · {report.cwd}\n"
+            "global = paths.global.*    local = ./ (cwd)",
+            expand=False,
+        )
+    )
+    for agent_info in report.agents:
+        console.print(
+            f"\n[bold]▌ {escape(agent_info.agent_id)}[/bold]   "
+            f"caps: {' · '.join(agent_info.capabilities)}"
+        )
+        for section in agent_info.sections:
+            _render_section(section)
+            console.print()  # blank line between sections for readability
+
+
+def _render_section(section: Section) -> None:
+    header = f"  [bold]{section.kind}[/bold] [dim]({section.layer})[/dim]"
+    if section.error:
+        console.print(f"{header}  [red]⚠ {escape(section.error)}[/red]")
+        return
+    if section.render_as == "linked":
+        if not section.entries:
+            console.print(f"{header}  [dim](not deployed: {escape(section.path)})[/dim]")
+            return
+        table = Table(show_edge=False, pad_edge=False)
+        table.add_column("Artifact")
+        table.add_column("Status")
+        table.add_column("Layer")
+        table.add_column("→")
+        for e in section.entries:
+            style = _STATUS_STYLE.get(e.status, "white")
+            mark = "⚠ dangling" if e.status == "dangling" else e.status
+            table.add_row(
+                escape(e.artifact or e.name),
+                f"[{style}]{mark}[/{style}]",
+                section.layer,
+                escape(e.target) if e.target else "[dim]—[/dim]",
+            )
+        console.print(table)
+    elif section.render_as == "instructions":
+        mark = "[green]✓ present[/green]" if section.present else "[dim]✗ absent[/dim]"
+        console.print(f"{header}  {mark}  [dim]{escape(section.path)}[/dim]")
+    elif section.render_as == "mcp":
+        if section.content is None:
+            console.print(f"{header}  [dim](no mcp file: {escape(section.path)})[/dim]")
+            return
+        console.print(
+            f"{header}  [red]⚠ raw — secrets shown[/red]  "
+            f"[dim]{escape(section.path)}[/dim]"
+        )
+        console.print(Syntax(section.content, "json", word_wrap=True))
 
 
 # ─── agents | profiles | scopes ─────────────────────────────────────────
