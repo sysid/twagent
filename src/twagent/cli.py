@@ -763,7 +763,7 @@ def artefacts(
     table.add_column("Source / Type")
     table.add_column("Description")
     for kind in kinds:
-        for art_name, item in config.registry(kind).items():
+        for art_name, item in sorted(config.registry(kind).items()):
             if isinstance(item, Server):
                 src_or_type = item.type + (f" ({item.command})" if item.command else "")
                 desc = "—"

@@ -165,6 +165,39 @@ def test_artefacts_lists_all_registries(artefacts_config, monkeypatch):
         assert name in result.output, f"{name} missing from listing"
 
 
+def test_artefacts_sorted_alphabetically_within_kind(tmp_path):
+    """Artefacts must list alphabetically by name within each kind,
+    regardless of declaration order in the TOML."""
+    src = tmp_path / "src"
+    src.mkdir()
+    for skill in ("zebra", "alpha", "mike"):
+        (src / skill).mkdir()
+    # Declared deliberately out of alphabetical order.
+    config_text = f"""\
+schema_version = 3
+[agents.claude-code]
+capabilities = ["skills"]
+[agents.claude-code.paths.global]
+skills = ["~/.claude/skills"]
+[agents.claude-code.paths.project]
+skills = [".claude/skills"]
+[agents.claude-code.vars]
+[skills.zebra]
+source = "{src}/zebra"
+[skills.alpha]
+source = "{src}/alpha"
+[skills.mike]
+source = "{src}/mike"
+"""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(config_text)
+
+    result = runner.invoke(app, ["--config", str(cfg), "artefacts", "--skills"])
+    assert result.exit_code == 0, result.output
+    positions = [result.output.index(n) for n in ("alpha", "mike", "zebra")]
+    assert positions == sorted(positions), result.output
+
+
 def test_artefacts_filter_skills_excludes_others(artefacts_config, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "x")
     result = runner.invoke(
