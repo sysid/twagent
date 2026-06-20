@@ -521,9 +521,7 @@ def info(
     if agent:
         unknown = [a for a in agent if a not in config.agents]
         if unknown:
-            err_console.print(
-                f"[red]Unknown agent(s):[/red] {', '.join(unknown)}"
-            )
+            err_console.print(f"[red]Unknown agent(s):[/red] {', '.join(unknown)}")
             err_console.print(f"  Available: {', '.join(sorted(config.agents))}")
             raise typer.Exit(2)
     report = collect_info(
@@ -538,8 +536,7 @@ def info(
 def _render_info(report: InfoReport) -> None:
     console.print(
         Panel(
-            f"twagent info · {report.cwd}\n"
-            "global = paths.global.*    local = ./ (cwd)",
+            f"twagent info · {report.cwd}\nglobal = paths.global.*    local = ./ (cwd)",
             expand=False,
         )
     )
@@ -560,7 +557,9 @@ def _render_section(section: Section) -> None:
         return
     if section.render_as == "linked":
         if not section.entries:
-            console.print(f"{header}  [dim](not deployed: {escape(section.path)})[/dim]")
+            console.print(
+                f"{header}  [dim](not deployed: {escape(section.path)})[/dim]"
+            )
             return
         table = Table(show_edge=False, pad_edge=False)
         table.add_column("Artifact")

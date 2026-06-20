@@ -285,9 +285,7 @@ def test_mcp_section_captures_raw_content_including_secrets(tmp_path):
     report = collect_info(config, cwd, include_global=True)
 
     global_mcp = [
-        s
-        for s in report.agents[0].sections
-        if s.kind == "mcp" and s.layer == "global"
+        s for s in report.agents[0].sections if s.kind == "mcp" and s.layer == "global"
     ][0]
     assert global_mcp.render_as == "mcp"
     # Deliberate per spec Q2=B: raw content is shown verbatim, secrets included.
@@ -299,9 +297,7 @@ def test_mcp_section_absent_file_has_no_content(tmp_path):
     config, cwd = _mcp_world(tmp_path, "{}")
     report = collect_info(config, cwd)
     local_mcp = [
-        s
-        for s in report.agents[0].sections
-        if s.kind == "mcp" and s.layer == "local"
+        s for s in report.agents[0].sections if s.kind == "mcp" and s.layer == "local"
     ][0]
     assert local_mcp.content is None
     assert local_mcp.error is None

@@ -243,9 +243,7 @@ def collect_info(
     for agent_id, agent in config.agents.items():
         if agent_filter and agent_id not in agent_filter:
             continue
-        agent_info = AgentInfo(
-            agent_id=agent_id, capabilities=list(agent.capabilities)
-        )
+        agent_info = AgentInfo(agent_id=agent_id, capabilities=list(agent.capabilities))
         for capability in agent.capabilities:
             for layer, path in _layer_paths(agent, capability, cwd, include_global):
                 if path.resolve() in excluded:
