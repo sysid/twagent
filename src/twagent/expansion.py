@@ -36,6 +36,15 @@ def expand_profile(config: Configuration, profile_name: str) -> ProfileExpansion
         prof = config.profiles[name]
         for parent in prof.extends:
             _walk(parent)
+        # Plugin members flatten into the kind buckets before the profile's
+        # own explicit refs (first-occurrence-wins handles overlap). Plugin
+        # has no `instructions` list, so getattr(..., []) yields [] for it.
+        for plugin_name in prof.plugins:
+            plugin = config.plugins[plugin_name]
+            for kind in buckets:
+                for ref in getattr(plugin, kind, []):
+                    if ref not in buckets[kind]:
+                        buckets[kind].append(ref)
         for kind in buckets:
             for ref in getattr(prof, kind):
                 if ref not in buckets[kind]:

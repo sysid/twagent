@@ -1,0 +1,16 @@
+{
+  "name": "alpha",
+  "description": "Alpha fixture plugin",
+  "version": "1.0.0",
+  "skills": "skills/",
+  "agents": "agents/",
+  "prompts": "prompts/",
+  "mcpServers": {
+    "alpha-server": {
+      "type": "stdio",
+      "command": "echo",
+      "args": ["hi"],
+      "env": { "ALPHA_TOKEN": "${ALPHA_TOKEN}" }
+    }
+  }
+}

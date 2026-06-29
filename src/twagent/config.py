@@ -14,6 +14,7 @@ isolation demands it (Constitution Principle I — YAGNI).
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import tomllib
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Final, Literal, overload
 
 from twagent.interpolate import load_dotenv
+from twagent.plugins import discover_plugin
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,25 @@ class Profile:
     subagents: list[str] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
     servers: list[str] = field(default_factory=list)
+    plugins: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Plugin:
+    """A registered Claude Code plugin and the artifact names it injected.
+
+    The member lists hold the bare names of pieces injected into the five
+    artifact registries. There is no `instructions` list — CC plugins don't
+    ship that kind.
+    """
+
+    name: str
+    source: Path
+    description: str | None = None
+    skills: list[str] = field(default_factory=list)
+    subagents: list[str] = field(default_factory=list)
+    prompts: list[str] = field(default_factory=list)
+    servers: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -146,6 +167,7 @@ class Configuration:
     prompts: dict[str, FileArtifact]
     servers: dict[str, Server]
     profiles: dict[str, Profile]
+    plugins: dict[str, Plugin] = field(default_factory=dict)
     env_file: Path | None = None
     env_vars: dict[str, str] = field(default_factory=dict)
 
@@ -237,6 +259,13 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
     prompts = _build_artifacts(raw.get("prompts", {}))
     servers = _build_servers(raw.get("servers", {}))
     profiles = _build_profiles(raw.get("profiles", {}))
+    plugins = _build_plugins(
+        raw.get("plugins", {}),
+        skills=skills,
+        subagents=subagents,
+        prompts=prompts,
+        servers=servers,
+    )
 
     if "scopes" in raw:
         raise ConfigError(
@@ -255,6 +284,7 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
         prompts=prompts,
         servers=servers,
         profiles=profiles,
+        plugins=plugins,
         env_file=env_file,
         env_vars=env_vars,
     )
@@ -322,33 +352,64 @@ def _build_artifacts(raw: dict) -> dict[str, FileArtifact]:
     }
 
 
-def _build_servers(raw: dict) -> dict[str, Server]:
-    out: dict[str, Server] = {}
-    for name, blob in raw.items():
-        server = Server(
-            name=name,
-            type=blob.get("type", "stdio"),
-            command=blob.get("command"),
-            args=list(blob["args"]) if "args" in blob else None,
-            url=blob.get("url"),
-            tools=list(blob["tools"]) if "tools" in blob else None,
-            env=dict(blob["env"]) if "env" in blob else None,
-            headers=dict(blob["headers"]) if "headers" in blob else None,
+def _build_server(name: str, blob: dict) -> Server:
+    server = Server(
+        name=name,
+        type=blob.get("type", "stdio"),
+        command=blob.get("command"),
+        args=list(blob["args"]) if "args" in blob else None,
+        url=blob.get("url"),
+        tools=list(blob["tools"]) if "tools" in blob else None,
+        env=dict(blob["env"]) if "env" in blob else None,
+        headers=dict(blob["headers"]) if "headers" in blob else None,
+    )
+    if server.type not in ("stdio", "http", "sse"):
+        raise ConfigError(
+            f"servers.{name}: type must be 'stdio', 'http', or 'sse', "
+            f"got {server.type!r}"
         )
-        if server.type not in ("stdio", "http", "sse"):
+    if server.type == "stdio" and not server.command:
+        raise ConfigError(f"servers.{name}: type=stdio requires 'command'")
+    if server.type in ("http", "sse") and not server.url:
+        raise ConfigError(f"servers.{name}: type={server.type} requires 'url'")
+    return server
+
+
+def _build_servers(raw: dict) -> dict[str, Server]:
+    return {name: _build_server(name, blob) for name, blob in raw.items()}
+
+
+# Keys a [profiles.<name>] block may contain. A misspelled key (e.g.
+# `pluings`) was previously dropped silently — turning a typo into a silent
+# no-op. Reject unknown keys so the failure is loud, per fail-fast.
+_PROFILE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "description",
+        "extends",
+        "instructions",
+        "skills",
+        "subagents",
+        "prompts",
+        "servers",
+        "plugins",
+    }
+)
+
+
+def _check_unknown_keys(where: str, blob: dict, allowed: frozenset[str]) -> None:
+    for key in blob:
+        if key not in allowed:
+            suggestion = difflib.get_close_matches(key, allowed, n=1)
+            hint = f" (did you mean {suggestion[0]!r}?)" if suggestion else ""
             raise ConfigError(
-                f"servers.{name}: type must be 'stdio', 'http', or 'sse', "
-                f"got {server.type!r}"
+                f"{where}: unknown key {key!r}{hint}. "
+                f"Valid keys: {', '.join(sorted(allowed))}"
             )
-        if server.type == "stdio" and not server.command:
-            raise ConfigError(f"servers.{name}: type=stdio requires 'command'")
-        if server.type in ("http", "sse") and not server.url:
-            raise ConfigError(f"servers.{name}: type={server.type} requires 'url'")
-        out[name] = server
-    return out
 
 
 def _build_profiles(raw: dict) -> dict[str, Profile]:
+    for name, blob in raw.items():
+        _check_unknown_keys(f"profiles.{name}", blob, _PROFILE_KEYS)
     return {
         name: Profile(
             name=name,
@@ -359,9 +420,114 @@ def _build_profiles(raw: dict) -> dict[str, Profile]:
             subagents=list(blob.get("subagents", [])),
             prompts=list(blob.get("prompts", [])),
             servers=list(blob.get("servers", [])),
+            plugins=list(blob.get("plugins", [])),
         )
         for name, blob in raw.items()
     }
+
+
+def _build_plugins(
+    raw: dict,
+    *,
+    skills: dict[str, FileArtifact],
+    subagents: dict[str, FileArtifact],
+    prompts: dict[str, FileArtifact],
+    servers: dict[str, Server],
+) -> dict[str, Plugin]:
+    """Discover each plugin and inject its pieces into the registries.
+
+    The registry dicts are mutated in place. Origins are tracked so a
+    same-kind name collision raises ConfigError naming both contributors.
+    Plugins are processed in sorted name order for deterministic errors.
+    """
+    # origin[(kind, name)] = human-readable source of the existing entry
+    origin: dict[tuple[str, str], str] = {}
+    for kind, registry in (
+        ("skills", skills),
+        ("subagents", subagents),
+        ("prompts", prompts),
+        ("servers", servers),
+    ):
+        for name in registry:
+            origin[(kind, name)] = f"[{kind}] table"
+
+    out: dict[str, Plugin] = {}
+    for plugin_name in sorted(raw):
+        blob = raw[plugin_name]
+        source = Path(blob["source"]).expanduser()
+        try:
+            contents = discover_plugin(plugin_name, source)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ConfigError(f"plugins.{plugin_name}: {exc}")
+
+        description = blob.get("description") or contents.description
+
+        skill_names = _inject_files(
+            "skills", contents.skills, skills, origin, plugin_name
+        )
+        subagent_names = _inject_files(
+            "subagents", contents.subagents, subagents, origin, plugin_name
+        )
+        prompt_names = _inject_files(
+            "prompts", contents.prompts, prompts, origin, plugin_name
+        )
+        server_names = _inject_servers(contents.servers, servers, origin, plugin_name)
+
+        out[plugin_name] = Plugin(
+            name=plugin_name,
+            source=source,
+            description=description,
+            skills=skill_names,
+            subagents=subagent_names,
+            prompts=prompt_names,
+            servers=server_names,
+        )
+    return out
+
+
+def _inject_files(
+    kind: str,
+    pieces: dict[str, Path],
+    registry: dict[str, FileArtifact],
+    origin: dict[tuple[str, str], str],
+    plugin_name: str,
+) -> list[str]:
+    names: list[str] = []
+    for name, src in pieces.items():
+        _guard_collision(kind, name, origin, plugin_name)
+        registry[name] = FileArtifact(name=name, source=src, description=None)
+        origin[(kind, name)] = f"plugin {plugin_name!r}"
+        names.append(name)
+    return names
+
+
+def _inject_servers(
+    pieces: dict[str, dict],
+    registry: dict[str, Server],
+    origin: dict[tuple[str, str], str],
+    plugin_name: str,
+) -> list[str]:
+    names: list[str] = []
+    for name, blob in pieces.items():
+        _guard_collision("servers", name, origin, plugin_name)
+        registry[name] = _build_server(name, blob)
+        origin[("servers", name)] = f"plugin {plugin_name!r}"
+        names.append(name)
+    return names
+
+
+def _guard_collision(
+    kind: str,
+    name: str,
+    origin: dict[tuple[str, str], str],
+    plugin_name: str,
+) -> None:
+    prior = origin.get((kind, name))
+    if prior is not None:
+        raise ConfigError(
+            f"{kind} {name!r} from plugin {plugin_name!r} collides with the "
+            f"same {kind} from {prior}; artifact names must be unique"
+        )
 
 
 # ─── Validation ─────────────────────────────────────────────────────────
@@ -433,6 +599,9 @@ def _validate_profiles(config: Configuration) -> None:
         for ref in prof.servers:
             if ref not in config.servers:
                 raise ConfigError(f"profiles.{prof.name}: unknown server {ref!r}")
+        for ref in prof.plugins:
+            if ref not in config.plugins:
+                raise ConfigError(f"profiles.{prof.name}: unknown plugin {ref!r}")
         for parent in prof.extends:
             if parent not in config.profiles:
                 raise ConfigError(
@@ -484,6 +653,19 @@ def _validate_no_name_shadow(config: Configuration) -> None:
                 f"name {prof_name!r} is defined as both a profile and "
                 f"a {artifact_names[prof_name]} artifact; --select uses "
                 f"polymorphic resolution — names MUST be unambiguous"
+            )
+    # Plugin names join the polymorphic-resolution namespace (--select),
+    # so they must not collide with any artifact or profile name.
+    for plugin_name in config.plugins:
+        if plugin_name in artifact_names:
+            raise ConfigError(
+                f"name {plugin_name!r} is defined as both a plugin and a "
+                f"{artifact_names[plugin_name]} artifact; names must be unambiguous"
+            )
+        if plugin_name in config.profiles:
+            raise ConfigError(
+                f"name {plugin_name!r} is defined as both a plugin and a "
+                f"profile; names must be unambiguous"
             )
 
 

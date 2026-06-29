@@ -452,3 +452,209 @@ def test_full_sample_fixture_loads(fixtures_dir, monkeypatch):
     assert "tw" in config.profiles
     # Each agent has its global_profile attached now (no scopes).
     assert config.agents["claude-code"].global_profile == "tw"
+
+
+# ─── plugins: dataclasses (Task 3) ──────────────────────────────────────
+
+from pathlib import Path  # noqa: E402
+
+FIXTURE_PLUGINS = Path(__file__).parent / "fixtures" / "plugins"
+
+
+def test_profile_parses_plugins_field():
+    from twagent.config import _build_profiles
+
+    profiles = _build_profiles({"p": {"plugins": ["alpha"]}})
+    assert profiles["p"].plugins == ["alpha"]
+
+
+def test_profile_plugins_defaults_empty():
+    from twagent.config import Profile
+
+    assert Profile(name="p").plugins == []
+
+
+def test_plugin_dataclass_holds_member_names():
+    from twagent.config import Plugin
+
+    plugin = Plugin(
+        name="alpha",
+        source=Path("/x"),
+        description=None,
+        skills=["greet"],
+        subagents=["helper.agent.md"],
+        prompts=["explain.prompt.md"],
+        servers=["alpha-server"],
+    )
+    assert plugin.skills == ["greet"]
+    assert plugin.servers == ["alpha-server"]
+
+
+# ─── plugins: loader wiring + collisions (Task 4) ───────────────────────
+
+
+def test_plugin_pieces_injected_into_registries(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[plugins.alpha]
+source = "{FIXTURE_PLUGINS / "alpha"}"
+"""
+    config = _write_config(tmp_path, body)
+
+    assert "greet" in config.skills
+    assert "helper.agent.md" in config.subagents
+    assert "explain.prompt.md" in config.prompts
+    assert "alpha-server" in config.servers
+
+    # Plugin record remembers what it contributed.
+    assert config.plugins["alpha"].skills == ["greet"]
+    assert config.plugins["alpha"].servers == ["alpha-server"]
+    # Description falls back to the manifest.
+    assert config.plugins["alpha"].description == "Alpha fixture plugin"
+
+
+def test_plugin_skill_collides_with_top_level_skill(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[skills.greet]
+source = "{FIXTURE_PLUGINS / "alpha" / "skills" / "greet"}"
+
+[plugins.alpha]
+source = "{FIXTURE_PLUGINS / "alpha"}"
+"""
+    with pytest.raises(ConfigError, match="greet"):
+        _write_config(tmp_path, body)
+
+
+def test_two_plugins_colliding_skill_names_error_names_both(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[plugins.alpha]
+source = "{FIXTURE_PLUGINS / "alpha"}"
+
+[plugins.beta]
+source = "{FIXTURE_PLUGINS / "beta"}"
+"""
+    with pytest.raises(ConfigError, match="alpha.*beta|beta.*alpha"):
+        _write_config(tmp_path, body)
+
+
+def test_plugin_missing_source_dir_is_hard_error(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[plugins.ghost]
+source = "{tmp_path / "nonexistent"}"
+"""
+    with pytest.raises(ConfigError, match="ghost"):
+        _write_config(tmp_path, body)
+
+
+# ─── plugins: validation extensions (Task 5) ────────────────────────────
+
+
+def test_plugin_name_shadowing_a_profile_errors(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[plugins.dup]
+source = "{FIXTURE_PLUGINS / "alpha"}"
+
+[profiles.dup]
+"""
+    with pytest.raises(ConfigError, match="dup"):
+        _write_config(tmp_path, body)
+
+
+def test_profile_referencing_unknown_plugin_errors(tmp_path):
+    body = """\
+schema_version = 3
+
+[profiles.p]
+plugins = ["ghost"]
+"""
+    with pytest.raises(ConfigError, match="unknown plugin 'ghost'"):
+        _write_config(tmp_path, body)
+
+
+def test_profile_referencing_known_plugin_validates(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[plugins.alpha]
+source = "{FIXTURE_PLUGINS / "alpha"}"
+
+[profiles.p]
+plugins = ["alpha"]
+"""
+    config = _write_config(tmp_path, body)  # must not raise
+    assert config.profiles["p"].plugins == ["alpha"]
+
+
+# ─── plugins: determinism (Task 9) ──────────────────────────────────────
+
+
+def test_collision_error_is_deterministic(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[plugins.beta]
+source = "{FIXTURE_PLUGINS / "beta"}"
+
+[plugins.alpha]
+source = "{FIXTURE_PLUGINS / "alpha"}"
+"""
+    messages = []
+    for _ in range(3):
+        try:
+            _write_config(tmp_path, body)
+        except ConfigError as exc:
+            messages.append(str(exc))
+    # alpha sorts before beta → alpha injected first → beta reported as the
+    # colliding contributor every time.
+    assert len(set(messages)) == 1
+    assert "beta" in messages[0]
+
+
+# ─── profiles: unknown-key hardening ────────────────────────────────────
+
+
+def test_profile_unknown_key_is_rejected_with_suggestion(tmp_path):
+    # Real-world footgun: `pluings` typo silently dropped the plugin ref.
+    body = """\
+schema_version = 3
+
+[profiles.wiz]
+pluings = ["aaa-security-remediation"]
+"""
+    with pytest.raises(ConfigError) as excinfo:
+        _write_config(tmp_path, body)
+    msg = str(excinfo.value)
+    assert "profiles.wiz" in msg
+    assert "pluings" in msg
+    assert "plugins" in msg  # nearest-match suggestion
+
+
+def test_profile_all_valid_keys_accepted(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[skills.s1]
+source = "{FIXTURE_PLUGINS / "alpha" / "skills" / "greet"}"
+
+[profiles.base]
+
+[profiles.p]
+description = "every valid key"
+extends = ["base"]
+skills = ["s1"]
+subagents = []
+prompts = []
+servers = []
+plugins = []
+"""
+    config = _write_config(tmp_path, body)  # must not raise
+    assert config.profiles["p"].skills == ["s1"]

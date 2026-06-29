@@ -295,3 +295,44 @@ class TestFzfBackend:
         monkeypatch.setattr(selector, "TerminalMenu", FakeMenu)
         select_interactive(items)
         assert called["fallback"] is True
+
+
+# ─── plugins: resolve_selection recognizes plugin names (Task 7) ─────────
+
+
+class TestResolveSelectionPlugins:
+    @staticmethod
+    def _config_with_plugin():
+        from pathlib import Path
+
+        from twagent.config import Common, Configuration, FileArtifact, Plugin
+
+        skills = {"greet": FileArtifact("greet", Path("/p/skills/greet"))}
+        plugin = Plugin(
+            name="alpha",
+            source=Path("/p"),
+            description=None,
+            skills=["greet"],
+        )
+        return Configuration(
+            schema_version=3,
+            common=Common(),
+            agents={},
+            instructions={},
+            skills=skills,
+            subagents={},
+            prompts={},
+            servers={},
+            profiles={},
+            plugins={"alpha": plugin},
+        )
+
+    def test_resolve_selection_expands_a_plugin_name(self):
+        config = self._config_with_plugin()
+        expanded = resolve_selection(["alpha"], config)
+        assert expanded.skills == ["greet"]
+
+    def test_resolve_selection_unknown_name_still_errors(self):
+        config = self._config_with_plugin()
+        with pytest.raises(ValueError, match="Unknown name"):
+            resolve_selection(["nope"], config)

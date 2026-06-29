@@ -116,6 +116,12 @@ def resolve_selection(names: list[str], config: "Configuration") -> ProfileExpan
                 for m in members:
                     if m not in buckets[kind]:
                         buckets[kind].append(m)
+        elif name in config.plugins:
+            plugin = config.plugins[name]
+            for kind in buckets:
+                for m in getattr(plugin, kind, []):
+                    if m not in buckets[kind]:
+                        buckets[kind].append(m)
         elif name in artifact_kind_of:
             kind = artifact_kind_of[name]
             if name not in buckets[kind]:
@@ -125,10 +131,12 @@ def resolve_selection(names: list[str], config: "Configuration") -> ProfileExpan
 
     if unknown:
         avail_profiles = sorted(config.profiles)
+        avail_plugins = sorted(config.plugins)
         avail_artifacts = sorted(artifact_kind_of)
         raise ValueError(
             f"Unknown name(s) in --select: {', '.join(unknown)}\n"
             f"  Available profiles: {', '.join(avail_profiles) or '(none)'}\n"
+            f"  Available plugins: {', '.join(avail_plugins) or '(none)'}\n"
             f"  Available artifacts: {', '.join(avail_artifacts) or '(none)'}"
         )
 

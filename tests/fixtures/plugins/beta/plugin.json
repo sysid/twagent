@@ -1,0 +1,6 @@
+{
+  "name": "beta",
+  "description": "Beta fixture plugin (collides with alpha on 'greet')",
+  "version": "1.0.0",
+  "skills": "skills/"
+}

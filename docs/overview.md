@@ -35,6 +35,13 @@ and materialises it onto disk in whatever shape each AI coding agent expects:
   and a `source` path. They're agent-agnostic.
 - **Profiles** bundle artifacts by kind. Profiles can `extend` other
   profiles — depth-first, parent-first, first-occurrence wins on duplicates.
+- **Plugins** are downloaded Claude Code plugins. Register one with
+  `[plugins.<name>] source = "..."`, reference it atomically from a profile
+  (`plugins = ["bmw-common"]`), and twagent expands its skills/agents/prompts/
+  MCP-servers into ordinary artifacts and fans them out to *every* agent.
+  twagent points at the unpacked dir (it never fetches), and deliberately does
+  not defer to Claude's native `/plugin` manager — the bundle is materialised
+  uniformly for all agents, same as any other artifact.
 - **Agents** declare which capabilities they support, where their files go
   (global *and* per-project paths), and one optional `global_profile` —
   the default loadout deployed by `apply --global`.
