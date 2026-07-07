@@ -86,6 +86,7 @@ class DeployContext:
     result: ApplyResult
     dry_run: bool = False
     show_secrets: bool = False
+    dedup_global: set[str] | None = None
 
 
 # ─── Render (instructions) ──────────────────────────────────────────────
@@ -306,6 +307,7 @@ def apply_here(
     agent_filter: list[str] | None = None,
     dry_run: bool = False,
     show_secrets: bool = False,
+    dedup: bool = True,
 ) -> ApplyResult:
     """Ad-hoc local deployment: render the selection under cwd via paths.project.
 
@@ -315,14 +317,20 @@ def apply_here(
     whose capabilities can serve at least one kind present in the selection
     (including instructions — instructions are now first-class artifacts
     selected via the same name resolution as everything else).
+
+    `dedup`: when True (default), skip symlinked artifacts (skills/subagents/
+    prompts) already present on-disk in the agent's `paths.global.*` dir, since
+    agents read both layers and a local copy would duplicate them.
     """
     logger.debug(
-        "deploy.apply_here: cwd=%s select=%s agent_filter=%s dry_run=%s show_secrets=%s",
+        "deploy.apply_here: cwd=%s select=%s agent_filter=%s dry_run=%s "
+        "show_secrets=%s dedup=%s",
         cwd,
         select,
         agent_filter,
         dry_run,
         show_secrets,
+        dedup,
     )
     expanded = resolve_selection(select, config)
     needed_caps = needed_capabilities(expanded)
@@ -340,6 +348,7 @@ def apply_here(
         ],
         targets_of=lambda agent, cap: _project_targets(agent, cap, cwd),
         warn_on_no_targets=True,
+        dedup_of=(lambda agent: _global_artifact_names(agent)) if dedup else None,
     )
     return result
 
@@ -358,6 +367,7 @@ def _apply_to_agents(
     cap_iter: Callable[[Agent, ProfileExpansion], list[str]],
     targets_of: Callable[[Agent, str], list[Path]],
     warn_on_no_targets: bool,
+    dedup_of: Callable[[Agent], set[str]] | None = None,
 ) -> ApplyResult:
     """Drive the per-(agent, capability) deploy loop shared by both modes.
 
@@ -430,6 +440,7 @@ def _apply_to_agents(
                 result=result,
                 dry_run=dry_run,
                 show_secrets=show_secrets,
+                dedup_global=dedup_of(agent) if dedup_of else None,
             )
             _apply_one(ctx, capability, targets)
     logger.debug(
@@ -518,6 +529,24 @@ def _project_targets(agent: Agent, capability: str, cwd: Path) -> list[Path]:
     return [cwd / p for p in relative]
 
 
+_DEDUP_KINDS = ("skills", "subagents", "prompts")
+
+
+def _global_artifact_names(agent: Agent) -> set[str]:
+    """Names of symlinked artifacts already present on-disk at the global layer.
+
+    Local apply skips these: agents read both layers, so a project copy of a
+    globally-deployed skill/subagent/prompt is a pure duplicate. MCP and
+    instructions are excluded — they are merged/rendered files, not dirs.
+    """
+    names: set[str] = set()
+    for capability in _DEDUP_KINDS:
+        for dir_path in agent.paths_global.get(capability, []):
+            if dir_path.is_dir():
+                names.update(entry.name for entry in dir_path.iterdir())
+    return names
+
+
 def _deploy_instructions(ctx: DeployContext, targets: list[Path]) -> None:
     """Render the (single) selected instruction template to each agent path.
 
@@ -563,6 +592,14 @@ def _deploy_file_artifacts(
     # Dispatch table only routes file kinds here; cast narrows the union.
     registry = cast(dict[str, FileArtifact], config.registry(capability))
     members = expanded.get(capability)
+    if ctx.dedup_global:
+        skipped = [n for n in members if n in ctx.dedup_global]
+        members = [n for n in members if n not in ctx.dedup_global]
+        for name in skipped:
+            label = f"{agent.id}/{capability}/{name} (already global; skipped)"
+            if ctx.dry_run:
+                result.dry_run_log.append(f"dedup {label}")
+            logger.debug("deploy.dedup: %s", label)
     sources = {name: registry[name].source for name in members if name in registry}
     for target_dir in targets:
         link_result = link_artifacts(sources, target_dir, dry_run=ctx.dry_run)

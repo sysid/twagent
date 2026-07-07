@@ -350,6 +350,51 @@ def test_here_with_mcp_profile(real_world_config, tmp_path, monkeypatch):
     assert not (project_root / ".claude" / "CLAUDE.md").exists()
 
 
+def test_here_dedup_skips_globally_present_skill(
+    real_world_config, tmp_path, monkeypatch
+):
+    """Local apply skips a skill already symlinked at the agent's global layer."""
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    # Simulate bkmr already deployed globally.
+    (claude_root / "skills").mkdir()
+    (claude_root / "skills" / "bkmr").symlink_to(real_world_config["skill_src"])
+    project_root = tmp_path / "dedup"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "bkmr"])
+    assert result.exit_code == 0, result.output
+    assert not (project_root / ".claude" / "skills" / "bkmr").exists()
+
+
+def test_here_no_dedup_forces_local_copy(real_world_config, tmp_path, monkeypatch):
+    """--no-dedup deploys the skill locally even though it's present globally."""
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    (claude_root / "skills").mkdir()
+    (claude_root / "skills" / "bkmr").symlink_to(real_world_config["skill_src"])
+    project_root = tmp_path / "nodedup"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--select", "bkmr", "--no-dedup"]
+    )
+    assert result.exit_code == 0, result.output
+    assert (project_root / ".claude" / "skills" / "bkmr").is_symlink()
+
+
+def test_here_dedup_keeps_project_only_skill(real_world_config, tmp_path, monkeypatch):
+    """Dedup leaves alone an artifact NOT present at the global layer."""
+    cfg = real_world_config["config"]
+    project_root = tmp_path / "projonly"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    # Global skills dir empty: bkmr is project-only → must deploy.
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--select", "bkmr"])
+    assert result.exit_code == 0, result.output
+    assert (project_root / ".claude" / "skills" / "bkmr").is_symlink()
+
+
 # ─── Bug regressions: --select narrows capabilities (v3 fix) ────────────
 
 

@@ -26,6 +26,7 @@ The main command. Two modes; `--here` (local) is the default.
 | `--interactive` | `-i` | Open a terminal picker. Honors `--select` as pre-checked items (expanded). |
 | `--dry-run` | `-n` | Show the plan, write nothing. Secrets masked unless `--show-secrets`. |
 | `--show-secrets` | `-S` | Reveal `${VAR}`-resolved values in dry-run / diff output. |
+| `--dedup` / `--no-dedup` | — | Local mode only. Skip skills/subagents/prompts already in the agent's `paths.global.*`. Default ON. |
 
 ### Examples
 
@@ -50,6 +51,14 @@ twagent apply -s tw-claude -i              # picker pre-checked w/ profile conte
   `extends`) or a single artifact.
 - **`none`** is reserved: `--select none` deploys an empty set (useful
   for "remove everything for this agent").
+
+### Dedup against the global layer
+
+Local deploy is **deduplicated by default**: skills, subagents, and prompts
+already present in the agent's `paths.global.*` dir are skipped, because agents
+read both the global and project layers — a local copy would be a pure
+duplicate. MCP files and instructions are never deduplicated. Pass `--no-dedup`
+to force local copies of globally-present artifacts.
 
 ### Interactive picker
 

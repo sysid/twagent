@@ -274,6 +274,15 @@ def apply(
             "secrets. Real files written to disk always contain real values."
         ),
     ),
+    dedup: bool = typer.Option(
+        True,
+        "--dedup/--no-dedup",
+        help=(
+            "Local mode only: skip skills/subagents/prompts already present in "
+            "the agent's paths.global.* dir, since agents read both layers. "
+            "ON by default; --no-dedup forces local copies of global artifacts."
+        ),
+    ),
 ) -> None:
     here = not global_mode
 
@@ -346,6 +355,7 @@ def apply(
                 agent_filter=list(agent) if agent else None,
                 dry_run=dry_run,
                 show_secrets=show_secrets,
+                dedup=dedup,
             )
         except ValueError as exc:
             err_console.print(f"[red]{exc}[/red]")

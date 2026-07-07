@@ -184,11 +184,13 @@ def _mask_json_text(text: str) -> str:
 
 def _mask_in_place(node: object) -> None:
     if isinstance(node, dict):
-        for key, value in node.items():
+        node_d = cast(dict[str, object], node)
+        for key, value in node_d.items():
             if key in ("env", "headers") and isinstance(value, dict):
-                for k in list(value):
-                    if isinstance(value[k], str):
-                        value[k] = "***"
+                value_d = cast(dict[str, object], value)
+                for k, v in value_d.items():
+                    if isinstance(v, str):
+                        value_d[k] = "***"
             else:
                 _mask_in_place(value)
     elif isinstance(node, list):
