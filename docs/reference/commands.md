@@ -28,6 +28,12 @@ The main command. Two modes; `--here` (local) is the default.
 | `--show-secrets` | `-S` | Reveal `${VAR}`-resolved values in dry-run / diff output. |
 | `--dedup` / `--no-dedup` | — | Local mode only. Skip skills/subagents/prompts already in the agent's `paths.global.*`. Default ON. |
 
+MCP writes **merge** into the target file: twagent owns only the format's
+top-level key (e.g. `mcpServers`) and replaces that subtree wholly; every
+foreign top-level key is preserved. Targets like `~/.claude.json` are
+harness-owned state files that merely also hold MCP config. An unparseable
+target is an error — never overwritten.
+
 ### Examples
 
 ```bash
@@ -93,6 +99,12 @@ twagent diff -S                 # reveal secret values
 ```
 
 Equivalent to `apply --global --dry-run` for the comparison subset.
+
+MCP comparison covers only the twagent-owned top-level key (matching apply's
+merge semantics) — harness state in shared files like `~/.claude.json` never
+registers as drift. Secret (`${VAR}`-derived) values are masked on BOTH sides
+before comparing, so they never drive drift either; literal env/header values
+still compare for real.
 
 ---
 

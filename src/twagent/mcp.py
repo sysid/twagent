@@ -136,8 +136,26 @@ def transform_for_format(servers: dict[str, "Server"], profile: FormatProfile) -
 
 
 def write_config(compiled: dict, path: Path) -> None:
-    """Write compiled MCP config as JSON to disk."""
-    payload = json.dumps(compiled, indent=2) + "\n"
+    """Merge compiled MCP config into the JSON file at `path`.
+
+    Merge, don't replace: targets like ~/.claude.json are HARNESS-OWNED state
+    files (userID, projects, trust dialogs, ...) that merely also hold MCP
+    config (same ownership model info.py documents for its exclusion list).
+    twagent owns ONLY the top-level key(s) in `compiled` — that subtree is
+    replaced wholly (servers dropped from config disappear); every foreign
+    top-level key is preserved.
+    """
+    existing: dict = {}
+    if path.exists():
+        text = path.read_text()
+        if text.strip():
+            try:
+                existing = json.loads(text)
+            except json.JSONDecodeError as e:
+                # Never clobber a file we cannot merge into.
+                raise ValueError(f"unparseable JSON at {path}: {e}") from e
+    existing.update(compiled)
+    payload = json.dumps(existing, indent=2) + "\n"
     logger.debug(
         "mcp.write_config: path=%s bytes=%d",
         path,

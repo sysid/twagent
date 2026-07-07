@@ -24,6 +24,7 @@ from twagent.deploy import (
     render_template,
 )
 from twagent.expansion import expand_profile
+from twagent.mcp import get_format
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +149,27 @@ def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
         show_secrets=show_secrets,
     )
     intended_text = json.dumps(intended_dict, indent=2) + "\n"
+    # twagent owns ONLY this subtree; targets like ~/.claude.json also hold
+    # harness state that must never register as drift (mirrors write_config).
+    assert agent.mcp_format is not None  # compile_mcp_for_agent raised otherwise
+    top_key = get_format(agent.mcp_format).top_level_key
     for target in targets:
-        current = target.read_text() if target.exists() else ""
-        compare_current = _mask_json_text(current) if not show_secrets else current
+        label = f"{agent.id}/mcp {target}"
+        if target.exists():
+            try:
+                current_data = json.loads(target.read_text() or "{}")
+            except json.JSONDecodeError:
+                report.in_sync = False
+                report.lines.append(f"! {label}: unparseable JSON blocks merge")
+                continue
+            current_dict: dict = {top_key: current_data.get(top_key, {})}
+            if not show_secrets:
+                _mask_like_intended(current_dict, intended_dict)
+            compare_current = json.dumps(current_dict, indent=2) + "\n"
+        else:
+            compare_current = ""
         if compare_current != intended_text:
             report.in_sync = False
-            label = f"{agent.id}/mcp {target}"
             diff = "\n".join(
                 difflib.unified_diff(
                     compare_current.splitlines(),
@@ -166,36 +182,26 @@ def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
             report.lines.append(diff)
 
 
-def _mask_json_text(text: str) -> str:
-    """Re-emit current JSON masking env/header values to '***'.
+def _mask_like_intended(current: object, intended: object) -> None:
+    """Mask current-side values to '***' exactly where the intended side is masked.
 
-    Cheap implementation: parse, walk env/headers, replace strings.
-    Returns text unchanged on parse error.
+    The intended side masks only ${VAR}-derived values (deploy dry-run). Masking
+    the current side symmetrically means secret VALUES never drive drift, while
+    literal values (e.g. a URL header) still compare for real. A blanket
+    key-based mask would hide genuine edits to literal env/header values.
     """
-    if not text:
-        return ""
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return text
-    _mask_in_place(data)
-    return json.dumps(data, indent=2) + "\n"
-
-
-def _mask_in_place(node: object) -> None:
-    if isinstance(node, dict):
-        node_d = cast(dict[str, object], node)
-        for key, value in node_d.items():
-            if key in ("env", "headers") and isinstance(value, dict):
-                value_d = cast(dict[str, object], value)
-                for k, v in value_d.items():
-                    if isinstance(v, str):
-                        value_d[k] = "***"
+    if isinstance(current, dict) and isinstance(intended, dict):
+        current_d = cast(dict[str, object], current)
+        intended_d = cast(dict[str, object], intended)
+        for key, value in current_d.items():
+            intended_value = intended_d.get(key)
+            if intended_value == "***" and isinstance(value, str):
+                current_d[key] = "***"
             else:
-                _mask_in_place(value)
-    elif isinstance(node, list):
-        for item in node:
-            _mask_in_place(item)
+                _mask_like_intended(value, intended_value)
+    elif isinstance(current, list) and isinstance(intended, list):
+        for current_item, intended_item in zip(current, intended):
+            _mask_like_intended(current_item, intended_item)
 
 
 # ─── Dispatch table ─────────────────────────────────────────────────────

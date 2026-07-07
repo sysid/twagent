@@ -158,3 +158,32 @@ class TestWriteConfig:
         output = tmp_path / "test.json"
         write_config({"key": "value"}, output)
         assert output.read_text().endswith("\n")
+
+    def test_preserves_foreign_top_level_keys(self, tmp_path):
+        # ~/.claude.json is Claude Code's own state file that merely also holds
+        # MCP config — twagent owns ONLY its top_level_key subtree and must
+        # never wipe harness state (userID, projects, ...).
+        output = tmp_path / ".claude.json"
+        output.write_text(
+            json.dumps(
+                {
+                    "userID": "u-123",
+                    "projects": {"/p": {"hasTrustDialogAccepted": True}},
+                    "mcpServers": {"old": {"command": "gone"}},
+                }
+            )
+        )
+        write_config({"mcpServers": {"github": {"command": "npx"}}}, output)
+        data = json.loads(output.read_text())
+        assert data["userID"] == "u-123"
+        assert data["projects"] == {"/p": {"hasTrustDialogAccepted": True}}
+        # the owned subtree is replaced wholly — removed servers disappear
+        assert data["mcpServers"] == {"github": {"command": "npx"}}
+
+    def test_rejects_unparseable_target(self, tmp_path):
+        # Never clobber a file we cannot merge into — fail fast instead.
+        output = tmp_path / ".claude.json"
+        output.write_text("{not json")
+        with pytest.raises(ValueError, match="unparseable"):
+            write_config({"mcpServers": {}}, output)
+        assert output.read_text() == "{not json"

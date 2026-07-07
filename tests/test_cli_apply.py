@@ -101,6 +101,29 @@ def test_bare_apply_defaults_to_here_mode(real_world_config, tmp_path, monkeypat
     assert "Local deploy requires --select" in result.output
 
 
+def test_apply_preserves_claude_state_keys(real_world_config):
+    """Claude Code stores its own state (userID, projects, ...) in the same
+    ~/.claude.json that twagent targets for MCP — apply must merge, not clobber."""
+    cfg = real_world_config["config"]
+    claude_root = real_world_config["claude_root"]
+    state_file = claude_root / ".claude.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "userID": "u-123",
+                "projects": {"/p": {"hasTrustDialogAccepted": True}},
+                "mcpServers": {},
+            }
+        )
+    )
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(state_file.read_text())
+    assert data["userID"] == "u-123"
+    assert data["projects"] == {"/p": {"hasTrustDialogAccepted": True}}
+    assert "github" in data["mcpServers"]
+
+
 def test_apply_is_idempotent(real_world_config):
     cfg = real_world_config["config"]
     runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
