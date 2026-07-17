@@ -50,7 +50,7 @@ EXPANSION_KINDS: Final[tuple[str, ...]] = (
 )
 Capability = Literal["instructions", "skills", "subagents", "prompts", "mcp"]
 
-MCP_FORMATS = ("claude-code", "copilot-cli", "pi", "vscode", "opencode")
+MCP_FORMATS = ("claude-code", "copilot-cli", "pi", "vscode", "opencode", "codex")
 
 # Capabilities whose paths.project entry MAY be omitted from per-agent config.
 PROJECT_OPTIONAL_CAPABILITIES: Final[tuple[str, ...]] = ("instructions",)

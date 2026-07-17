@@ -12,6 +12,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,7 +25,7 @@ from twagent.deploy import (
     render_template,
 )
 from twagent.expansion import expand_profile
-from twagent.mcp import get_format
+from twagent.mcp import get_format, serialize
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,26 @@ def _diff_links(ctx: DiffContext, cap: str, targets: list[Path]) -> None:
                 report.lines.append(f"~ {label}: was → {link.resolve()}; now → {src}")
 
 
+def _parse_current(text: str, serializer: str) -> dict:
+    """Parse a deployed config into plain data. Raises ValueError if unparseable.
+
+    Unlike write_config's parser this uses stdlib tomllib, not tomlkit: diff
+    never writes back, so it wants plain dicts — which is what keeps
+    _mask_like_intended operating on real dict/list containers.
+    """
+    if serializer == "toml":
+        try:
+            return tomllib.loads(text)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(str(e)) from e
+    if serializer == "json":
+        try:
+            return json.loads(text or "{}")
+        except json.JSONDecodeError as e:
+            raise ValueError(str(e)) from e
+    raise ValueError(f"unknown serializer: {serializer!r}")
+
+
 def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
     config, agent, expanded, report = ctx.config, ctx.agent, ctx.expanded, ctx.report
     show_secrets = ctx.show_secrets
@@ -148,24 +169,28 @@ def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
         dry_run=not show_secrets,
         show_secrets=show_secrets,
     )
-    intended_text = json.dumps(intended_dict, indent=2) + "\n"
-    # twagent owns ONLY this subtree; targets like ~/.claude.json also hold
-    # harness state that must never register as drift (mirrors write_config).
+    # twagent owns ONLY this subtree; targets like ~/.claude.json and
+    # ~/.codex/config.toml also hold harness state that must never register as
+    # drift (mirrors write_config).
     assert agent.mcp_format is not None  # compile_mcp_for_agent raised otherwise
-    top_key = get_format(agent.mcp_format).top_level_key
+    profile = get_format(agent.mcp_format)
+    top_key = profile.top_level_key
+    intended_text = serialize(intended_dict, profile.serializer)
     for target in targets:
         label = f"{agent.id}/mcp {target}"
         if target.exists():
             try:
-                current_data = json.loads(target.read_text() or "{}")
-            except json.JSONDecodeError:
+                current_data = _parse_current(target.read_text(), profile.serializer)
+            except ValueError:
                 report.in_sync = False
-                report.lines.append(f"! {label}: unparseable JSON blocks merge")
+                report.lines.append(
+                    f"! {label}: unparseable {profile.serializer.upper()} blocks merge"
+                )
                 continue
             current_dict: dict = {top_key: current_data.get(top_key, {})}
             if not show_secrets:
                 _mask_like_intended(current_dict, intended_dict)
-            compare_current = json.dumps(current_dict, indent=2) + "\n"
+            compare_current = serialize(current_dict, profile.serializer)
         else:
             compare_current = ""
         if compare_current != intended_text:

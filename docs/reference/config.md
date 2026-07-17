@@ -28,7 +28,7 @@ refuses to load otherwise.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `capabilities` | list of strings | yes | Subset of `instructions`, `skills`, `subagents`, `prompts`, `mcp`. |
-| `mcp_format` | string | iff `mcp` in capabilities | One of: `claude-code`, `copilot-cli`, `pi`, `vscode`, `opencode`. |
+| `mcp_format` | string | iff `mcp` in capabilities | One of: `claude-code`, `copilot-cli`, `pi`, `codex`, `vscode`, `opencode`. |
 | `global_profile` | string | no | Profile name deployed by `apply --global`. |
 | `paths.global.<kind>` | list of paths | per capability | Canonical destinations. Always a list (1+ entries). |
 | `paths.project.<kind>` | list of paths | per capability | cwd-relative destinations for `apply --here`. `instructions` is optional here. |
@@ -69,6 +69,17 @@ Skills and subagents may be files or directories — twagent symlinks the
 Per-agent quirks (e.g. copilot-cli rewriting stdio → local in the compiled
 JSON) live in the `mcp_format` translator — you only write one canonical
 server block.
+
+`codex` diverges furthest, because its config is TOML rather than JSON and it
+infers transport from the fields present:
+
+| Canonical | Compiled for codex |
+|---|---|
+| `type` | *omitted* — codex infers stdio vs http from `command` vs `url` |
+| `headers` | `http_headers` |
+| `tools = ["*"]` | *omitted* — codex's `enabled_tools` is a literal tool-name allow-list with no wildcard syntax, so `["*"]` would mean a tool named `*`. Omitting is how codex spells "all tools". |
+| `tools` (any other list) | `enabled_tools` — a real allow-list is translated as written; dropping it would silently widen the server to all tools. |
+| `type = "sse"` | *server skipped, with a warning* — codex has no sse transport |
 
 ### Profile — `[profiles.<name>]`
 
@@ -176,6 +187,27 @@ mcp    = [".github/copilot/mcp.json"]
 
 [agents.copilot-cli.vars]
 agent_name         = "Copilot"
+extra_instructions = []
+
+# codex: no `subagents` (codex's are TOML, not Markdown) and no `prompts`
+# (deprecated upstream). Its skills live under the cross-vendor `.agents/`
+# convention, and its MCP target doubles as codex's own state file.
+[agents.codex]
+capabilities   = ["instructions", "skills", "mcp"]
+mcp_format     = "codex"
+global_profile = "tw"
+
+[agents.codex.paths.global]
+instructions = ["~/.codex/AGENTS.md"]
+skills       = ["~/.agents/skills"]
+mcp          = ["~/.codex/config.toml"]
+
+[agents.codex.paths.project]
+skills = [".agents/skills"]
+mcp    = [".codex/config.toml"]
+
+[agents.codex.vars]
+agent_name         = "Codex"
 extra_instructions = []
 
 # ─── Instructions (Jinja2 templates) ───────────────────────────────────

@@ -997,7 +997,9 @@ work_email = "you@example.com"
 # An agent has:
 #   capabilities    : subset of {instructions, skills, subagents, prompts, mcp}
 #   mcp_format      : required iff "mcp" in capabilities; one of:
-#                     claude-code | copilot-cli | pi | vscode | opencode
+#                     claude-code | copilot-cli | pi | codex | vscode | opencode
+#                     (codex is the only TOML target; it omits `type` and
+#                      renames headers -> http_headers. See docs/reference/config.md)
 #   global_profile  : optional profile name; what `apply --global` deploys
 #   paths.global    : per-capability list of destination paths (always a list)
 #   paths.project   : same shape (used by local `apply`); instructions may be omitted

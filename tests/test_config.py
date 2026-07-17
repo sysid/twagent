@@ -165,6 +165,22 @@ mcp = [".mcp.json"]
         _write_config(tmp_path, body)
 
 
+def test_codex_mcp_format_accepted(tmp_path):
+    body = """\
+schema_version = 3
+[agents.foo]
+capabilities = ["mcp"]
+mcp_format = "codex"
+[agents.foo.paths.global]
+mcp = ["~/.codex/config.toml"]
+[agents.foo.paths.project]
+mcp = [".codex/config.toml"]
+[profiles.p]
+"""
+    config = _write_config(tmp_path, body)
+    assert config.agents["foo"].mcp_format == "codex"
+
+
 # ─── v3 migration: legacy fields rejected ──────────────────────────────
 
 
@@ -448,7 +464,7 @@ def test_full_sample_fixture_loads(fixtures_dir, monkeypatch):
     with pytest.warns(UserWarning):
         config = load(fixtures_dir / "sample_config.toml")
     assert config.schema_version == 3
-    assert set(config.agents.keys()) == {"claude-code", "copilot-cli", "pi"}
+    assert set(config.agents.keys()) == {"claude-code", "copilot-cli", "pi", "codex"}
     assert "tw" in config.profiles
     # Each agent has its global_profile attached now (no scopes).
     assert config.agents["claude-code"].global_profile == "tw"

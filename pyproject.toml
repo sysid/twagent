@@ -17,6 +17,9 @@ dependencies = [
     "jinja2>=3.1",
     "simple-term-menu>=1.6",
     "rich>=13.0",
+    # Round-trip TOML writer: codex's ~/.codex/config.toml is harness-owned
+    # state, so its own tables and comments must survive a twagent write.
+    "tomlkit>=0.13",
 ]
 
 [project.scripts]

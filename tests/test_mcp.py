@@ -5,6 +5,7 @@ field; agent-specific MCP quirks live in FormatProfile, not in TOML.
 """
 
 import json
+import tomllib
 
 import pytest
 
@@ -12,6 +13,7 @@ from twagent.config import Server
 from twagent.mcp import (
     FORMAT_REGISTRY,
     get_format,
+    serialize,
     transform_for_format,
     write_config,
 )
@@ -56,10 +58,14 @@ class TestGetFormat:
             get_format("definitely-not-a-format")
 
     def test_all_required_formats_registered(self):
-        # spec lists 5: claude-code, copilot-cli, pi, vscode, opencode
-        assert {"claude-code", "copilot-cli", "pi", "vscode", "opencode"} <= set(
-            FORMAT_REGISTRY
-        )
+        assert {
+            "claude-code",
+            "copilot-cli",
+            "pi",
+            "vscode",
+            "opencode",
+            "codex",
+        } <= set(FORMAT_REGISTRY)
 
 
 class TestTransformForFormat:
@@ -187,3 +193,193 @@ class TestWriteConfig:
         with pytest.raises(ValueError, match="unparseable"):
             write_config({"mcpServers": {}}, output)
         assert output.read_text() == "{not json"
+
+
+class TestCodexFormat:
+    """Codex is the first non-JSON target and diverges from every JSON format.
+
+    Its shape is defined by ~/.codex/config.toml: `[mcp_servers.<id>]` tables,
+    transport INFERRED from command-vs-url (no `type` key at all), and
+    `http_headers` rather than `headers`.
+    """
+
+    def test_codex_top_level_key(self, simple_servers):
+        result = transform_for_format(simple_servers, get_format("codex"))
+        assert "mcp_servers" in result
+
+    def test_codex_omits_type_key(self, simple_servers):
+        # Codex infers transport from the presence of command vs url; a `type`
+        # key is not part of its schema.
+        result = transform_for_format(simple_servers, get_format("codex"))
+        assert "type" not in result["mcp_servers"]["github"]
+        assert "type" not in result["mcp_servers"]["atlassian"]
+
+    def test_codex_stdio_passthrough(self, simple_servers):
+        result = transform_for_format(simple_servers, get_format("codex"))
+        github = result["mcp_servers"]["github"]
+        assert github["command"] == "npx"
+        assert github["args"] == ["-y", "@modelcontextprotocol/server-github"]
+        assert github["env"] == {"GITHUB_TOKEN": "test-token"}
+
+    def test_codex_uses_http_headers_not_headers(self, simple_servers):
+        result = transform_for_format(simple_servers, get_format("codex"))
+        atlassian = result["mcp_servers"]["atlassian"]
+        assert atlassian["url"] == "https://example.com/mcp/"
+        assert atlassian["http_headers"]["X-Atlassian-Token"] == "test-token"
+        assert "headers" not in atlassian
+
+    def test_codex_omits_wildcard_tools(self, simple_servers):
+        # Codex's `enabled_tools` is a literal allow-list of tool NAMES with no
+        # wildcard syntax, so the canonical ["*"] would be read as a tool
+        # literally named "*". Omitting yields codex's default: all tools.
+        result = transform_for_format(simple_servers, get_format("codex"))
+        assert "tools" not in result["mcp_servers"]["atlassian"]
+        assert "enabled_tools" not in result["mcp_servers"]["atlassian"]
+
+    def test_codex_maps_explicit_tools_to_enabled_tools(self):
+        # A real whitelist MUST survive translation: omitting it would fall back
+        # to codex's "all tools" default and silently WIDEN what the server may
+        # do — the opposite of what the user asked for.
+        servers = {
+            "restricted": Server(
+                name="restricted",
+                type="stdio",
+                command="npx",
+                tools=["read_file", "list_dir"],
+            )
+        }
+        result = transform_for_format(servers, get_format("codex"))
+        assert result["mcp_servers"]["restricted"]["enabled_tools"] == [
+            "read_file",
+            "list_dir",
+        ]
+        assert "tools" not in result["mcp_servers"]["restricted"]
+
+    def test_codex_omits_tools_when_wildcard_mixed_with_names(self):
+        # ["*", "foo"] already means "all tools"; codex expresses that by
+        # omitting enabled_tools entirely, so this is faithful, not a widening.
+        servers = {
+            "mixed": Server(
+                name="mixed", type="stdio", command="npx", tools=["*", "read_file"]
+            )
+        }
+        result = transform_for_format(servers, get_format("codex"))
+        assert "enabled_tools" not in result["mcp_servers"]["mixed"]
+
+    def test_codex_empty_tools_list_registers_no_tools(self):
+        # An empty whitelist means "expose nothing" — enabled_tools=[] says
+        # exactly that to codex. Omitting would mean the opposite.
+        servers = {
+            "muzzled": Server(name="muzzled", type="stdio", command="npx", tools=[])
+        }
+        result = transform_for_format(servers, get_format("codex"))
+        assert result["mcp_servers"]["muzzled"]["enabled_tools"] == []
+
+    def test_codex_omits_enabled_tools_when_unset(self, simple_servers):
+        result = transform_for_format(simple_servers, get_format("codex"))
+        assert "enabled_tools" not in result["mcp_servers"]["github"]
+
+    def test_codex_keeps_http_servers(self, simple_servers):
+        # Codex supports streamable HTTP; only sse is unsupported.
+        result = transform_for_format(simple_servers, get_format("codex"))
+        assert "atlassian" in result["mcp_servers"]
+
+    def test_codex_skips_sse_with_warning(self, capsys):
+        # Codex speaks stdio and streamable-http only — there is no sse
+        # transport, so an sse server must be dropped, loudly.
+        servers = {
+            "los-mcp-local": Server(
+                name="los-mcp-local",
+                type="sse",
+                url="http://localhost:8113/mcp/sse",
+            )
+        }
+        result = transform_for_format(servers, get_format("codex"))
+        assert result["mcp_servers"] == {}
+        stderr = capsys.readouterr().err
+        assert "los-mcp-local" in stderr
+        assert "codex" in stderr
+
+
+class TestSerialize:
+    def test_json_serializer(self):
+        assert serialize({"a": 1}, "json") == '{\n  "a": 1\n}\n'
+
+    def test_toml_serializer(self):
+        assert serialize({"a": 1}, "toml") == "a = 1\n"
+
+    def test_unknown_serializer_raises(self):
+        # A typo in a FormatProfile must not silently write JSON into a .toml
+        # target — that surfaces later as the agent failing to parse its own
+        # config, far from the cause.
+        with pytest.raises(ValueError, match="unknown serializer"):
+            serialize({"a": 1}, "tolm")
+
+    def test_write_config_rejects_unknown_serializer(self, tmp_path):
+        # write_config parses before it serializes, so a typo'd serializer must
+        # fail on the read side too — and must not touch the file.
+        output = tmp_path / "config.toml"
+        output.write_text("a = 1\n")
+        with pytest.raises(ValueError, match="unknown serializer"):
+            write_config({"mcp_servers": {}}, output, serializer="tolm")
+        assert output.read_text() == "a = 1\n"
+
+
+class TestWriteConfigToml:
+    """~/.codex/config.toml is live harness state that merely also holds MCP.
+
+    Codex writes [projects.*.trust_level] and [tui.*] into the same file, so a
+    twagent write must replace only the `mcp_servers` table and leave every
+    other table — and its comments — byte-intact.
+    """
+
+    def test_writes_standard_tables_not_inline(self, tmp_path):
+        output = tmp_path / "config.toml"
+        data = {"mcp_servers": {"github": {"command": "npx"}}}
+        write_config(data, output, serializer="toml")
+        assert "[mcp_servers.github]" in output.read_text()
+
+    def test_roundtrips_through_tomllib(self, tmp_path):
+        output = tmp_path / "config.toml"
+        data = {"mcp_servers": {"github": {"command": "npx", "args": ["-y", "srv"]}}}
+        write_config(data, output, serializer="toml")
+        assert tomllib.loads(output.read_text()) == data
+
+    def test_preserves_foreign_tables_and_comments(self, tmp_path):
+        output = tmp_path / "config.toml"
+        output.write_text(
+            '# hand-written by Tom\n'
+            '[projects."/p"]\n'
+            'trust_level = "trusted"\n'
+            '\n'
+            '[tui.model_availability_nux]\n'
+            '"gpt-5.6-sol" = 1\n'
+            '\n'
+            '[mcp_servers.old]\n'
+            'command = "gone"\n'
+        )
+        write_config({"mcp_servers": {"github": {"command": "npx"}}}, output, serializer="toml")
+        text = output.read_text()
+        assert "# hand-written by Tom" in text
+        parsed = tomllib.loads(text)
+        assert parsed["projects"]["/p"]["trust_level"] == "trusted"
+        assert parsed["tui"]["model_availability_nux"]["gpt-5.6-sol"] == 1
+        # the owned subtree is replaced wholly — removed servers disappear
+        assert parsed["mcp_servers"] == {"github": {"command": "npx"}}
+
+    def test_rejects_unparseable_toml(self, tmp_path):
+        # Never clobber a file we cannot merge into — fail fast instead.
+        output = tmp_path / "config.toml"
+        output.write_text("[not toml")
+        with pytest.raises(ValueError, match="unparseable"):
+            write_config({"mcp_servers": {}}, output, serializer="toml")
+        assert output.read_text() == "[not toml"
+
+    def test_toml_single_trailing_newline(self, tmp_path):
+        # tomlkit.dumps already terminates with a newline; adding another would
+        # drift the diff by one line on every apply.
+        output = tmp_path / "config.toml"
+        write_config({"mcp_servers": {}}, output, serializer="toml")
+        text = output.read_text()
+        assert text.endswith("\n")
+        assert not text.endswith("\n\n")

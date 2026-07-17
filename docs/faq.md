@@ -21,9 +21,11 @@ If you still have either installed, removing them is safe once your
 
 ### Which agents are supported?
 
-Out of the box: **claude-code**, **copilot-cli**, **pi**, **vscode**,
-**opencode** (the values accepted in `mcp_format`). Adding a new agent
-is a TOML-only operation unless its MCP JSON shape is genuinely new.
+Out of the box: **claude-code**, **copilot-cli**, **pi**, **codex**,
+**vscode**, **opencode** (the values accepted in `mcp_format`). Adding a new
+agent is a TOML-only operation unless its MCP wire shape is genuinely new —
+**codex** is the one case where it was, so it has a dedicated builder and is
+the only target written as TOML rather than JSON.
 
 ## Getting started
 

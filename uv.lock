@@ -704,6 +704,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "rich" },
     { name = "simple-term-menu" },
+    { name = "tomlkit" },
     { name = "typer" },
 ]
 
@@ -723,6 +724,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "rich", specifier = ">=13.0" },
     { name = "simple-term-menu", specifier = ">=1.6" },
+    { name = "tomlkit", specifier = ">=0.13" },
     { name = "typer", specifier = ">=0.15" },
 ]
 

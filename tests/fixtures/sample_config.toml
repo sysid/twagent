@@ -67,6 +67,27 @@ mcp    = [".pi/mcp.json"]
 agent_name = "Pi"
 extra_instructions = []
 
+# codex is the only TOML target: its MCP lives in ~/.codex/config.toml, which
+# is also codex's own state file. No subagents (codex's are .toml, not .md) and
+# no prompts (deprecated upstream).
+[agents.codex]
+capabilities   = ["instructions", "skills", "mcp"]
+mcp_format     = "codex"
+global_profile = "minimal"
+
+[agents.codex.paths.global]
+instructions = ["~/.codex/AGENTS.md"]
+skills       = ["~/.agents/skills"]
+mcp          = ["~/.codex/config.toml"]
+
+[agents.codex.paths.project]
+skills = [".agents/skills"]
+mcp    = [".codex/config.toml"]
+
+[agents.codex.vars]
+agent_name = "Codex"
+extra_instructions = []
+
 # ─── Instructions registry ─────────────────────────────────────────────
 [instructions.AGENT-md]
 source = "/tmp/twagent-test/templates/AGENT.md.j2"

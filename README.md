@@ -3,7 +3,7 @@
 </p>
 
 Unified configuration framework for AI coding agents — Claude Code, Copilot CLI,
-Pi, VS Code, opencode. **One canonical TOML, one CLI, two deploy modes.**
+Pi, Codex, VS Code, opencode. **One canonical TOML, one CLI, two deploy modes.**
 
 ## What you get
 

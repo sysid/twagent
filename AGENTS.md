@@ -1,5 +1,5 @@
 # twagent
-Python CLI that materialises one canonical TOML (`~/.config/twagent/config.toml`) into per-agent config — Claude Code, Copilot CLI, Pi, VS Code, opencode.
+Python CLI that materialises one canonical TOML (`~/.config/twagent/config.toml`) into per-agent config — Claude Code, Copilot CLI, Pi, Codex, VS Code, opencode.
 
 ## Commands
 - Single test: `uv run pytest tests/test_foo.py::test_bar` (bare `pytest` will miss deps; always go through `uv run`).
@@ -12,6 +12,8 @@ Python CLI that materialises one canonical TOML (`~/.config/twagent/config.toml`
 - `apply` is the **only** mutator of agent directories. It removes orphan symlinks on each run (see commit `becf250`). NEVER hand-delete files under `~/.claude/skills`, `~/.copilot/skills`, etc. — re-run `apply` instead.
 - Current TOML schema is `schema_version = 3`. v2 had `[[scopes]]`; if you see that, it's stale.
 - Adding a new agent target is **config-only** UNLESS its MCP wire format is genuinely new — then add a translator in `src/twagent/mcp.py`. Do not invent new MCP shapes elsewhere.
+- `FormatProfile` has two escape hatches for formats that are not a point in the declarative space: `serializer` (`json`/`toml`) and `builder`. Prefer the shared `_build_server_dict` plus declarative axes; reach for a `builder` only when a format renames or omits keys wholesale (see `codex`). Do NOT add per-format boolean flags to `FormatProfile`.
+- `mcp.write_config` MUST update-in-place (`existing.update(compiled)`), never rebuild the document from parsed data — that is what preserves foreign tables, comments, and formatting in harness-owned state files (`~/.claude.json`, `~/.codex/config.toml`).
 - Profile `extends` resolution is depth-first, parent-first, **first-occurrence wins** on duplicate names.
 
 ## Strict Antipatterns
@@ -24,6 +26,8 @@ Python CLI that materialises one canonical TOML (`~/.config/twagent/config.toml`
 - `RUN_ENV=local` in the Makefile is currently dead — no code reads it. Don't add features that depend on it without wiring a reader first.
 - `${VAR}` interpolation in MCP `env`/`headers` reads `os.environ` overlaid on the optional `env_file` dotenv (path is relative to the config file). Missing variables raise unless `${VAR:-default}` is used. Interpolation semantics match the legacy `twmcp` project.
 - Dry-run output redacts resolved `${VAR}` values by default; pass `--show-secrets` to see them. Don't paste dry-run output into issues without checking.
+- **codex** is the only TOML target and the only agent with a custom `builder`. Its shape is pinned to codex's own `McpServerConfig` (`codex-rs/config/src/mcp_types.rs`): NO `type` key (the transport enum is `#[serde(untagged, deny_unknown_fields)]`, so an emitted `type` is a hard parse error, not noise), `http_headers` not `headers`, `tools` → `enabled_tools` EXCEPT the `["*"]` wildcard which must be omitted (`enabled_tools` is a literal tool-name list; omitting is how codex spells "all tools"). Dropping a non-wildcard `tools` would silently widen the server — don't. **No sse transport** — sse servers are skipped with a warning. Codex subagents are `.toml` and prompts are deprecated upstream, which is why codex declares only `instructions`/`skills`/`mcp`.
+- Codex skills belong in `~/.agents/skills` (the cross-vendor location), NOT `~/.codex/skills` — the latter is deprecated in codex's own `loader.rs`.
 
 ## Domain glossary
 - **artifact**: one skill / subagent / prompt / instruction / MCP server. Globally-unique `name`, registered in one of five registries.

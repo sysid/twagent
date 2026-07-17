@@ -4,8 +4,8 @@ One canonical TOML, one CLI, every AI coding agent on your machine.
 
 ## Why twagent?
 
-You probably have Claude Code, Copilot CLI, Pi (or VS Code, opencode...) each
-expecting their own files in their own places:
+You probably have Claude Code, Copilot CLI, Pi, Codex (or VS Code, opencode...)
+each expecting their own files in their own places:
 
 ```
   ~/.claude/CLAUDE.md          ┐

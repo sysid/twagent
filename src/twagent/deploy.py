@@ -15,7 +15,6 @@ Single module owns three deploy modes — kept together until tests want a split
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -33,7 +32,7 @@ from twagent.config import (
 )
 from twagent.expansion import expand_profile, needed_capabilities
 from twagent.interpolate import resolve_variables
-from twagent.mcp import get_format, transform_for_format, write_config
+from twagent.mcp import get_format, serialize, transform_for_format, write_config
 from twagent.selector import resolve_selection
 
 logger = logging.getLogger(__name__)
@@ -633,12 +632,16 @@ def _deploy_mcp(ctx: DeployContext, targets: list[Path]) -> None:
     except Exception as exc:
         result.errors.append(f"{agent.id}/mcp: {exc}")
         return
+    assert agent.mcp_format is not None  # compile_mcp_for_agent raised otherwise
+    serializer = get_format(agent.mcp_format).serializer
     for target in targets:
         if ctx.dry_run:
-            preview = json.dumps(compiled, indent=2)
+            # Preview through the same serializer that write_config would use,
+            # or a toml agent is shown JSON that will never be written.
+            preview = serialize(compiled, serializer)
             result.dry_run_log.append(f"mcp → {target}\n{_indent(preview)}")
         else:
-            write_config(compiled, target)
+            write_config(compiled, target, serializer)
             result.written.append(str(target))
 
 

@@ -1,6 +1,7 @@
 """Tests for `twagent apply` — global + here modes, polymorphic --select."""
 
 import json
+import tomllib
 
 import pytest
 from typer.testing import CliRunner
@@ -515,3 +516,152 @@ source = "{tpl_b}"
     result = runner.invoke(app, ["--config", str(cfg), "apply", "-G", "-s", "a,b"])
     assert result.exit_code == 1
     assert "at most ONE instruction" in result.output
+
+
+# ─── codex: the TOML target ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def codex_config(tmp_path, monkeypatch):
+    """A codex agent whose MCP target is a pre-existing codex state file."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_real_token")
+
+    skill_src = tmp_path / "skills_src" / "bkmr"
+    skill_src.mkdir(parents=True)
+    (skill_src / "SKILL.md").write_text("# bkmr skill")
+
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir()
+    # Pre-seed the harness state codex writes for itself. An apply must not
+    # disturb any of it.
+    (codex_root / "config.toml").write_text(
+        '# hand-written by Tom\n'
+        '[projects."/some/repo"]\n'
+        'trust_level = "trusted"\n'
+        '\n'
+        '[tui.model_availability_nux]\n'
+        '"gpt-5.6-sol" = 1\n'
+    )
+
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+    (templates_dir / "agents.md.j2").write_text("# {{ agent_name }} for {{ user_name }}\n")
+
+    config_text = f"""\
+schema_version = 3
+
+[common.vars]
+user_name = "Tom"
+
+[agents.codex]
+capabilities = ["instructions", "skills", "mcp"]
+mcp_format = "codex"
+global_profile = "tw"
+[agents.codex.paths.global]
+instructions = ["{codex_root}/AGENTS.md"]
+skills = ["{codex_root}/agents_skills"]
+mcp = ["{codex_root}/config.toml"]
+[agents.codex.paths.project]
+skills = [".agents/skills"]
+mcp = [".codex/config.toml"]
+[agents.codex.vars]
+agent_name = "Codex"
+
+[instructions.AGENT-md]
+source = "{templates_dir}/agents.md.j2"
+
+[skills.bkmr]
+source = "{skill_src}"
+
+[servers.github]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = {{ GITHUB_TOKEN = "${{GITHUB_TOKEN}}" }}
+
+[servers.los-mcp-local]
+type = "sse"
+url = "http://localhost:8113/mcp/sse"
+
+[profiles.tw]
+instructions = ["AGENT-md"]
+skills = ["bkmr"]
+servers = ["github", "los-mcp-local"]
+"""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(config_text)
+    return {"config": config_path, "codex_root": codex_root}
+
+
+def test_apply_preserves_codex_harness_state(codex_config):
+    """~/.codex/config.toml is codex's own state file, not twagent's to own."""
+    cfg = codex_config["config"]
+    codex_root = codex_config["codex_root"]
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+    assert result.exit_code == 0, result.output
+
+    text = (codex_root / "config.toml").read_text()
+    assert "# hand-written by Tom" in text
+    parsed = tomllib.loads(text)
+    assert parsed["projects"]["/some/repo"]["trust_level"] == "trusted"
+    assert parsed["tui"]["model_availability_nux"]["gpt-5.6-sol"] == 1
+    # ...and twagent's own subtree landed, in codex's shape.
+    assert parsed["mcp_servers"]["github"]["command"] == "npx"
+    assert parsed["mcp_servers"]["github"]["env"] == {"GITHUB_TOKEN": "ghs_real_token"}
+    assert "type" not in parsed["mcp_servers"]["github"]
+
+
+def test_apply_skips_sse_server_for_codex(codex_config):
+    cfg = codex_config["config"]
+    codex_root = codex_config["codex_root"]
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+    assert result.exit_code == 0, result.output
+    parsed = tomllib.loads((codex_root / "config.toml").read_text())
+    assert "los-mcp-local" not in parsed["mcp_servers"]
+
+
+def test_dry_run_preview_is_toml_for_codex(codex_config):
+    """A toml agent must never be shown a JSON preview of a TOML write."""
+    cfg = codex_config["config"]
+    result = runner.invoke(
+        app, ["--config", str(cfg), "apply", "--global", "--dry-run"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "[mcp_servers.github]" in result.output
+    # A JSON preview would render codex's top_level_key as `"mcp_servers":`;
+    # asserting on "mcpServers" instead would pass no matter what we emit.
+    assert '"mcp_servers"' not in result.output
+
+
+def test_apply_then_diff_in_sync_for_codex(codex_config):
+    """The round-trip that catches any serializer asymmetry between the two."""
+    cfg = codex_config["config"]
+    assert runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    result = runner.invoke(app, ["--config", str(cfg), "diff"])
+    assert result.exit_code == 0, result.output
+
+
+def test_diff_reports_unparseable_codex_toml(codex_config):
+    """The TOML twin of test_cli_diff.py::test_diff_unparseable_current_reports_drift.
+
+    A file we cannot parse must block the merge loudly, and say TOML — not JSON.
+    """
+    cfg = codex_config["config"]
+    codex_root = codex_config["codex_root"]
+    assert runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    (codex_root / "config.toml").write_text("[not toml")
+    result = runner.invoke(app, ["--config", str(cfg), "diff"])
+    assert result.exit_code == 1
+    assert "unparseable TOML" in result.output
+
+
+def test_diff_detects_codex_drift(codex_config):
+    """Counterpart to the in-sync test: drift in the TOML target must be seen."""
+    cfg = codex_config["config"]
+    codex_root = codex_config["codex_root"]
+    assert runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    target = codex_root / "config.toml"
+    target.write_text(target.read_text().replace('command = "npx"', 'command = "hacked"'))
+    result = runner.invoke(app, ["--config", str(cfg), "diff"])
+    assert result.exit_code == 1
+    assert "hacked" in result.output

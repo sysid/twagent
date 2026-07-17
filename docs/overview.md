@@ -98,10 +98,17 @@ the value comes from one config feeding many destinations.
 
 ## Supported agents
 
-Out of the box: **claude-code**, **copilot-cli**, **pi**, **vscode**,
-**opencode**. The list is extensible — an "agent" is just a TOML block
-naming paths, capabilities, and an `mcp_format` translator. Adding a new
+Out of the box: **claude-code**, **copilot-cli**, **pi**, **codex**,
+**vscode**, **opencode**. The list is extensible — an "agent" is just a TOML
+block naming paths, capabilities, and an `mcp_format` translator. Adding a new
 agent doesn't require code changes unless its MCP format is genuinely new.
+
+**codex** is the standing example of "genuinely new": it is the only target
+whose MCP config is TOML (`~/.codex/config.toml`) rather than JSON, and it
+names different keys, so it carries a dedicated builder in `mcp.py`. That file
+is also codex's own state file — it holds `[projects]` trust levels and `[tui]`
+settings — so twagent replaces only the `mcp_servers` table and leaves the rest
+untouched.
 
 ## Two patterns at a glance
 
