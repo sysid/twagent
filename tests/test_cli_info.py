@@ -3,10 +3,12 @@
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from twagent.cli import app
+from twagent.cli import _render_section, app
+from twagent.info import Section
 
 runner = CliRunner()
 
@@ -91,6 +93,28 @@ def test_info_human_output_shows_status_and_layer(tmp_path):
     assert "skills" in result.stdout
     assert "bkmr" in result.stdout
     assert "dangling" in result.stdout
+
+
+def test_mcp_human_output_uses_content_format_and_terminal_theme(capsys):
+    section = Section(
+        kind="mcp",
+        layer="global",
+        path="/home/.codex/config.toml",
+        render_as="mcp",
+        content='[mcp_servers.docs]\nurl = "https://example.com/mcp"\n',
+        content_format="toml",
+    )
+
+    with patch("twagent.cli.Syntax") as syntax:
+        _render_section(section)
+
+    syntax.assert_called_once_with(
+        section.content,
+        "toml",
+        theme="ansi_dark",
+        word_wrap=True,
+    )
+    assert "TOML" in capsys.readouterr().out
 
 
 def test_info_unknown_agent_errors_and_lists_available(tmp_path):

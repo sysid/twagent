@@ -288,9 +288,43 @@ def test_mcp_section_captures_raw_content_including_secrets(tmp_path):
         s for s in report.agents[0].sections if s.kind == "mcp" and s.layer == "global"
     ][0]
     assert global_mcp.render_as == "mcp"
+    assert global_mcp.content_format == "json"
     # Deliberate per spec Q2=B: raw content is shown verbatim, secrets included.
     assert global_mcp.content == body
     assert "ghp_SECRET123" in global_mcp.content
+
+
+def test_codex_mcp_section_records_toml_content_format(tmp_path):
+    mcp_file = tmp_path / "home" / "codex" / "config.toml"
+    mcp_file.parent.mkdir(parents=True)
+    mcp_file.write_text('[mcp_servers.docs]\nurl = "https://example.com/mcp"\n')
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""\
+schema_version = 3
+[agents.codex]
+capabilities = ["mcp"]
+mcp_format = "codex"
+[agents.codex.paths.global]
+mcp = ["{mcp_file}"]
+[agents.codex.paths.project]
+mcp = [".codex/config.toml"]
+[agents.codex.vars]
+[profiles.p]
+"""
+    )
+
+    report = collect_info(load(config_path), cwd, include_global=True)
+
+    global_mcp = [
+        section
+        for section in report.agents[0].sections
+        if section.kind == "mcp" and section.layer == "global"
+    ][0]
+    assert global_mcp.content_format == "toml"
 
 
 def test_mcp_section_absent_file_has_no_content(tmp_path):

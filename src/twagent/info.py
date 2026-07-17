@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import cast
 
 from twagent.config import Agent, Configuration, FileArtifact
+from twagent.mcp import get_format
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ class Section:
     render_as drives presentation:
       "linked"       -> `entries` populated (skills/subagents/prompts)
       "instructions" -> `present` set (rendered file: name not recoverable)
-      "mcp"          -> `content` set (raw file text, secrets included)
+      "mcp"          -> `content` and `content_format` set (raw file text,
+                        secrets included)
     `error` is set (and the scan continues) when a path can't be read.
     """
 
@@ -71,6 +73,7 @@ class Section:
     entries: list[Entry] = field(default_factory=list)
     present: bool | None = None
     content: str | None = None
+    content_format: str | None = None
     error: str | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -82,6 +85,7 @@ class Section:
             "entries": [e.as_dict() for e in self.entries],
             "present": self.present,
             "content": self.content,
+            "content_format": self.content_format,
             "error": self.error,
         }
 
@@ -178,8 +182,14 @@ def _scan_instructions(file_path: Path, layer: str) -> Section:
     )
 
 
-def _scan_mcp(file_path: Path, layer: str) -> Section:
-    section = Section(kind="mcp", layer=layer, path=str(file_path), render_as="mcp")
+def _scan_mcp(file_path: Path, layer: str, content_format: str) -> Section:
+    section = Section(
+        kind="mcp",
+        layer=layer,
+        path=str(file_path),
+        render_as="mcp",
+        content_format=content_format,
+    )
     if not file_path.exists():
         return section  # absent => no content
     # WHY (deliberate deviation): the compiled MCP file on disk has ${VAR}
@@ -255,6 +265,10 @@ def collect_info(
                 elif capability == "instructions":
                     agent_info.sections.append(_scan_instructions(path, layer))
                 elif capability == "mcp":
-                    agent_info.sections.append(_scan_mcp(path, layer))
+                    assert agent.mcp_format is not None
+                    content_format = get_format(agent.mcp_format).serializer
+                    agent_info.sections.append(
+                        _scan_mcp(path, layer, content_format)
+                    )
         report.agents.append(agent_info)
     return report

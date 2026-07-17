@@ -132,10 +132,11 @@ globals only), `info` reads disk reality and tags every entry:
 - `⚠ dangling` — broken symlink
 
 Instructions are reported present/absent (the rendered file's source name is
-not recoverable from disk). MCP files are shown as raw content. Provenance is
-the **layer** (global vs local); the deploying profile is not recoverable from
-disk and is not shown. Exits 0 on success (drift never fails it); an unknown
-`-a` agent id is a usage error and exits 2 with the list of valid agents.
+not recoverable from disk). MCP files are shown as raw content with syntax
+highlighting matching their JSON or TOML wire format. Provenance is the
+**layer** (global vs local); the deploying profile is not recoverable from disk
+and is not shown. Exits 0 on success (drift never fails it); an unknown `-a`
+agent id is a usage error and exits 2 with the list of valid agents.
 
 `~/.claude.json` is **never shown** — it is Claude Code's own state file, not a
 twagent artifact.

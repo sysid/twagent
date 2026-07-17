@@ -600,11 +600,20 @@ def _render_section(section: Section) -> None:
         if section.content is None:
             console.print(f"{header}  [dim](no mcp file: {escape(section.path)})[/dim]")
             return
+        assert section.content_format is not None
         console.print(
-            f"{header}  [red]⚠ raw — secrets shown[/red]  "
+            f"{header}  [cyan]{section.content_format.upper()}[/cyan]  "
+            f"[red]⚠ raw — secrets shown[/red]  "
             f"[dim]{escape(section.path)}[/dim]"
         )
-        console.print(Syntax(section.content, "json", word_wrap=True))
+        console.print(
+            Syntax(
+                section.content,
+                section.content_format,
+                theme="ansi_dark",
+                word_wrap=True,
+            )
+        )
 
 
 # ─── agents | profiles | scopes ─────────────────────────────────────────
