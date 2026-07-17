@@ -52,9 +52,7 @@ def resolve_variables(text: str, variables: dict[str, str]) -> str:
     return result
 
 
-def resolve_for_display(
-    text: str, variables: dict[str, str]
-) -> DisplayInterpolation:
+def resolve_for_display(text: str, variables: dict[str, str]) -> DisplayInterpolation:
     """Resolve a value while masking only variables that are actually set.
 
     Defaults remain visible when their variable is absent. `resolved` is None

@@ -125,9 +125,7 @@ def test_info_masks_json_content_by_default_and_show_secrets_reveals(
 ):
     monkeypatch.setenv("TOKEN", "real_secret_value")
     mcp_file = tmp_path / "mcp.json"
-    mcp_file.write_text(
-        '{"mcpServers":{"gh":{"env":{"TOKEN":"real_secret_value"}}}}'
-    )
+    mcp_file.write_text('{"mcpServers":{"gh":{"env":{"TOKEN":"real_secret_value"}}}}')
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f"""\

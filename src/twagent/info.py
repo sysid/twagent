@@ -207,14 +207,10 @@ def _server_redaction_variants(
         for key, value in values.items():
             display = resolve_for_display(value, variables)
             expected[key] = (
-                cast(str, _UNRESOLVED)
-                if display.resolved is None
-                else display.resolved
+                cast(str, _UNRESOLVED) if display.resolved is None else display.resolved
             )
             masked[key] = display.masked
-            markers[key] = (
-                cast(str, _INTERPOLATED) if display.interpolated else value
-            )
+            markers[key] = cast(str, _INTERPOLATED) if display.interpolated else value
         return expected, masked, markers
 
     expected_env, masked_env, marked_env = _values(server.env)
@@ -298,9 +294,7 @@ def _redact_mcp_content(
     masked_servers: dict[str, Server] = {}
     marked_servers: dict[str, Server] = {}
     for name, server in canonical.items():
-        expected, masked, marked = _server_redaction_variants(
-            server, config.env_vars
-        )
+        expected, masked, marked = _server_redaction_variants(server, config.env_vars)
         expected_servers[name] = expected
         masked_servers[name] = masked
         marked_servers[name] = marked
