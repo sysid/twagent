@@ -348,17 +348,19 @@ class TestWriteConfigToml:
     def test_preserves_foreign_tables_and_comments(self, tmp_path):
         output = tmp_path / "config.toml"
         output.write_text(
-            '# hand-written by Tom\n'
+            "# hand-written by Tom\n"
             '[projects."/p"]\n'
             'trust_level = "trusted"\n'
-            '\n'
-            '[tui.model_availability_nux]\n'
+            "\n"
+            "[tui.model_availability_nux]\n"
             '"gpt-5.6-sol" = 1\n'
-            '\n'
-            '[mcp_servers.old]\n'
+            "\n"
+            "[mcp_servers.old]\n"
             'command = "gone"\n'
         )
-        write_config({"mcp_servers": {"github": {"command": "npx"}}}, output, serializer="toml")
+        write_config(
+            {"mcp_servers": {"github": {"command": "npx"}}}, output, serializer="toml"
+        )
         text = output.read_text()
         assert "# hand-written by Tom" in text
         parsed = tomllib.loads(text)

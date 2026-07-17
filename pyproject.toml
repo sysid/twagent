@@ -33,7 +33,7 @@ dev = [
     "ty>=0.0.11",
     "pre-commit>=4.0.0",
     "bump-my-version>=0.28.0",
-    "build>=2.0.0",
+    "build>=1.4.0",
 ]
 
 [build-system]
@@ -92,22 +92,25 @@ tag = false
 tag_name = "v{new_version}"
 message = "Bump version to {new_version}"
 
-[tool.bumpversion.file_patterns]
-"src/twagent/__init__.py" = [
-    {search = "__version__ = '{current_version}'", replace = "__version__ = '{new_version}'"},
-]
-"VERSION" = [
-    {search = "{current_version}", replace = "{new_version}"},
-]
-"pyproject.toml" = [
-    {search = "version = {current_version}", replace = "version = {new_version}"},
-]
-
+# Every file entry MUST carry an anchored `search`. Without one bump-my-version
+# defaults to a bare `{current_version}` search and rewrites EVERY occurrence of
+# the version string in the file — which is how the 1.4.0 → 2.0.0 bump silently
+# turned the `build>=1.4.0` dev pin into an unresolvable `build>=2.0.0` and broke
+# every `uv run`. Anchor on the key, never on the bare number.
 [[tool.bumpversion.files]]
 filename = "VERSION"
+search = "{current_version}"
+replace = "{new_version}"
 
+# `version = "..."` also matches `current_version = "..."` as a substring, so this
+# one pattern covers both [project] and [tool.bumpversion] — while leaving
+# dependency pins like `build>=1.4.0` alone.
 [[tool.bumpversion.files]]
 filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
 
 [[tool.bumpversion.files]]
 filename = "src/twagent/__init__.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'

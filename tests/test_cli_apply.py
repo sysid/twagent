@@ -535,17 +535,19 @@ def codex_config(tmp_path, monkeypatch):
     # Pre-seed the harness state codex writes for itself. An apply must not
     # disturb any of it.
     (codex_root / "config.toml").write_text(
-        '# hand-written by Tom\n'
+        "# hand-written by Tom\n"
         '[projects."/some/repo"]\n'
         'trust_level = "trusted"\n'
-        '\n'
-        '[tui.model_availability_nux]\n'
+        "\n"
+        "[tui.model_availability_nux]\n"
         '"gpt-5.6-sol" = 1\n'
     )
 
     templates_dir = tmp_path / "templates"
     templates_dir.mkdir()
-    (templates_dir / "agents.md.j2").write_text("# {{ agent_name }} for {{ user_name }}\n")
+    (templates_dir / "agents.md.j2").write_text(
+        "# {{ agent_name }} for {{ user_name }}\n"
+    )
 
     config_text = f"""\
 schema_version = 3
@@ -636,7 +638,9 @@ def test_dry_run_preview_is_toml_for_codex(codex_config):
 def test_apply_then_diff_in_sync_for_codex(codex_config):
     """The round-trip that catches any serializer asymmetry between the two."""
     cfg = codex_config["config"]
-    assert runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    assert (
+        runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    )
     result = runner.invoke(app, ["--config", str(cfg), "diff"])
     assert result.exit_code == 0, result.output
 
@@ -648,7 +652,9 @@ def test_diff_reports_unparseable_codex_toml(codex_config):
     """
     cfg = codex_config["config"]
     codex_root = codex_config["codex_root"]
-    assert runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    assert (
+        runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    )
     (codex_root / "config.toml").write_text("[not toml")
     result = runner.invoke(app, ["--config", str(cfg), "diff"])
     assert result.exit_code == 1
@@ -659,9 +665,13 @@ def test_diff_detects_codex_drift(codex_config):
     """Counterpart to the in-sync test: drift in the TOML target must be seen."""
     cfg = codex_config["config"]
     codex_root = codex_config["codex_root"]
-    assert runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    assert (
+        runner.invoke(app, ["--config", str(cfg), "apply", "--global"]).exit_code == 0
+    )
     target = codex_root / "config.toml"
-    target.write_text(target.read_text().replace('command = "npx"', 'command = "hacked"'))
+    target.write_text(
+        target.read_text().replace('command = "npx"', 'command = "hacked"')
+    )
     result = runner.invoke(app, ["--config", str(cfg), "diff"])
     assert result.exit_code == 1
     assert "hacked" in result.output

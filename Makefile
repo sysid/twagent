@@ -6,8 +6,11 @@ app_root := $(CURDIR)
 pkg_src = $(app_root)/src/twagent
 tests_src = $(app_root)/tests
 
+# Ordered deliberately: the gate runs BEFORE build, so a failure costs seconds
+# and nothing reaches PyPI. A publish is not revocable -- a bad version can only
+# be yanked, never replaced.
 .PHONY: all
-all: clean build publish  ## Build and publish to PyPI
+all: clean lint ty test build publish  ## Test, build and publish to PyPI
 
 ################################################################################
 # Testing \
@@ -100,18 +103,25 @@ CLEAN:  ## ############################################################
 .PHONY: clean
 clean: clean-build clean-pyc  ## remove all build, test, coverage and Python artifacts
 
+# A virtualenv's bytecode is not ours to delete: removing it only forces a
+# needless recompile, and where the venv is read-only (sandboxes, CI caches) the
+# rm fails outright and takes `make clean` -- and so `make all` -- down with it.
+# clean-build always pruned these; clean-pyc did not, which is the asymmetry that
+# broke `make clean`.
+venv_prune := \( -path ./env -o -path ./venv -o -path ./.env -o -path ./.venv \) -prune -o
+
 .PHONY: clean-build
 clean-build:
 	rm -fr build/ dist/ .eggs/
-	find . \( -path ./env -o -path ./venv -o -path ./.env -o -path ./.venv \) -prune -o -name '*.egg-info' -exec rm -fr {} +
-	find . \( -path ./env -o -path ./venv -o -path ./.env -o -path ./.venv \) -prune -o -name '*.egg' -exec rm -f {} +
+	find . $(venv_prune) -name '*.egg-info' -exec rm -fr {} +
+	find . $(venv_prune) -name '*.egg' -exec rm -f {} +
 
 .PHONY: clean-pyc
 clean-pyc:
-	find . -name '*.pyc' -exec rm -f {} +
-	find . -name '*.pyo' -exec rm -f {} +
-	find . -name '*~' -exec rm -f {} +
-	find . -name '__pycache__' -exec rm -fr {} +
+	find . $(venv_prune) -name '*.pyc' -exec rm -f {} +
+	find . $(venv_prune) -name '*.pyo' -exec rm -f {} +
+	find . $(venv_prune) -name '*~' -exec rm -f {} +
+	find . $(venv_prune) -name '__pycache__' -exec rm -fr {} +
 
 ################################################################################
 # Misc \
