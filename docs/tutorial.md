@@ -154,8 +154,8 @@ env     = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 
 The `${GITHUB_TOKEN}` placeholder is resolved from your shell environment
 (or from a dotenv file declared via top-level `env_file = "secrets.env"`)
-at deploy time. Secrets are masked in `--dry-run` output unless you pass
-`--show-secrets`.
+at deploy time. Resolved values are masked in `--dry-run`, `diff`, and `info`
+output unless you pass `--show-secrets`.
 
 ## Step 4 — Wire it into a profile
 

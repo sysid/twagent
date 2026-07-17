@@ -500,10 +500,9 @@ Read-only; never writes; always exits 0. Use --json for scripting.
 Note: ~/.claude.json is never shown (it is Claude Code's own state file,
 not a twagent artifact).
 
-SECURITY: MCP files are printed VERBATIM, including resolved ${VAR}
-secrets (API keys, tokens). This is intentional (full content for human
-inspection) and deviates from `diff`/`apply`, which redact by default.
-Do not paste `info` output into issues or share your terminal scrollback.
+Resolved ${VAR} values are masked by default. Defaults from
+${VAR:-default} remain visible when the variable is unset. Literal values
+are not treated as secrets. Pass --show-secrets to print exact raw files.
 """
 
 _STATUS_STYLE = {
@@ -533,6 +532,15 @@ def info(
         "-j",
         help="Emit machine-parseable JSON instead of the Rich view.",
     ),
+    show_secrets: bool = typer.Option(
+        False,
+        "--show-secrets",
+        "-S",
+        help=(
+            "Reveal resolved values from ${VAR} interpolation. "
+            "OFF by default (terminal scrollback leaks secrets)."
+        ),
+    ),
 ) -> None:
     config = _load_config()
     if agent:
@@ -542,7 +550,11 @@ def info(
             err_console.print(f"  Available: {', '.join(sorted(config.agents))}")
             raise typer.Exit(2)
     report = collect_info(
-        config, Path.cwd(), agent_filter=agent, include_global=global_mode
+        config,
+        Path.cwd(),
+        agent_filter=agent,
+        include_global=global_mode,
+        show_secrets=show_secrets,
     )
     if output_json:
         typer.echo(json.dumps(report.as_dict(), indent=2))
@@ -601,9 +613,14 @@ def _render_section(section: Section) -> None:
             console.print(f"{header}  [dim](no mcp file: {escape(section.path)})[/dim]")
             return
         assert section.content_format is not None
+        exposure = (
+            "[green]🔒 resolved variables masked[/green]"
+            if section.variables_masked
+            else "[red]⚠ raw — secrets shown[/red]"
+        )
         console.print(
             f"{header}  [cyan]{section.content_format.upper()}[/cyan]  "
-            f"[red]⚠ raw — secrets shown[/red]  "
+            f"{exposure}  "
             f"[dim]{escape(section.path)}[/dim]"
         )
         console.print(

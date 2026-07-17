@@ -287,7 +287,8 @@ instructions path with that agent's own `agent_name` and `extra_instructions`.
   layer.)
 - Sources: `os.environ` plus the dotenv pointed at by `env_file`. Env
   always wins over dotenv on key clash.
-- Secrets are **masked by default** in `apply -n` / `diff` output. Use
+- Resolved variable values are **masked by default** in `apply -n`, `diff`, and
+  `info` output. Literal values are not recognized as secrets. Use
   `-S` / `--show-secrets` to reveal.
 
 ## Profile composition rules

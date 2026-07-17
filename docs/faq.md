@@ -63,11 +63,12 @@ missing variable is a hard error, not a silent empty string.
 Yes. Set multiple paths in `paths.global.instructions` (or `paths.project.instructions`).
 The same rendered output is written to all of them.
 
-### Why are my secrets showing as `***` in `--dry-run`?
+### Why are my secrets showing as `***` in `--dry-run`, `diff`, or `info`?
 
 By design — terminal scrollback leaks. Real files on disk always contain
-real values. Pass `--show-secrets` (`-S`) to reveal them in dry-run / diff
-output when you actually need to inspect.
+real values. Pass `--show-secrets` (`-S`) to reveal them when you actually need
+to inspect. Only values derived from `${VAR}` are masked; literal credentials
+remain visible.
 
 ## Usage
 

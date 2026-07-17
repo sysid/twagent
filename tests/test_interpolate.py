@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from twagent.interpolate import load_dotenv, resolve_variables
+from twagent.interpolate import load_dotenv, resolve_for_display, resolve_variables
 
 
 class TestResolveVariables:
@@ -51,6 +51,43 @@ class TestResolveVariables:
             resolve_variables("${VAR:-https://example.com/path}", {})
             == "https://example.com/path"
         )
+
+
+class TestResolveForDisplay:
+    def test_masks_set_variable_and_preserves_literal_text(self):
+        result = resolve_for_display("Bearer ${TOKEN}", {"TOKEN": "secret"})
+
+        assert result.resolved == "Bearer secret"
+        assert result.masked == "Bearer ***"
+        assert result.interpolated is True
+
+    def test_shows_default_when_variable_is_unset(self):
+        result = resolve_for_display("${HOST:-localhost}", {})
+
+        assert result.resolved == "localhost"
+        assert result.masked == "localhost"
+        assert result.interpolated is True
+
+    def test_masks_environment_value_that_overrides_default(self):
+        result = resolve_for_display("${HOST:-localhost}", {"HOST": "production"})
+
+        assert result.resolved == "production"
+        assert result.masked == "***"
+        assert result.interpolated is True
+
+    def test_unresolved_variable_has_no_expected_value(self):
+        result = resolve_for_display("Bearer ${TOKEN}", {})
+
+        assert result.resolved is None
+        assert result.masked == "Bearer ***"
+        assert result.interpolated is True
+
+    def test_literal_is_not_marked_as_interpolated(self):
+        result = resolve_for_display("visible", {"TOKEN": "secret"})
+
+        assert result.resolved == "visible"
+        assert result.masked == "visible"
+        assert result.interpolated is False
 
 
 class TestLoadDotenv:

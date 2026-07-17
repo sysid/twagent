@@ -25,7 +25,7 @@ The main command. Two modes; `--here` (local) is the default.
 | `--select <names>` | `-s` | CSV of profile names AND/OR artifact names. `none` deploys empty. |
 | `--interactive` | `-i` | Open a terminal picker. Honors `--select` as pre-checked items (expanded). |
 | `--dry-run` | `-n` | Show the plan, write nothing. Secrets masked unless `--show-secrets`. |
-| `--show-secrets` | `-S` | Reveal `${VAR}`-resolved values in dry-run / diff output. |
+| `--show-secrets` | `-S` | Reveal `${VAR}`-resolved values in dry-run output. |
 | `--dedup` / `--no-dedup` | — | Local mode only. Skip skills/subagents/prompts already in the agent's `paths.global.*`. Default ON. |
 
 MCP writes **merge** into the target file: twagent owns only the format's
@@ -132,11 +132,12 @@ globals only), `info` reads disk reality and tags every entry:
 - `⚠ dangling` — broken symlink
 
 Instructions are reported present/absent (the rendered file's source name is
-not recoverable from disk). MCP files are shown as raw content with syntax
-highlighting matching their JSON or TOML wire format. Provenance is the
-**layer** (global vs local); the deploying profile is not recoverable from disk
-and is not shown. Exits 0 on success (drift never fails it); an unknown `-a`
-agent id is a usage error and exits 2 with the list of valid agents.
+not recoverable from disk). MCP files use syntax highlighting matching their
+JSON or TOML wire format. Resolved `${VAR}` values are masked by default;
+`${VAR:-default}` shows its default when the variable is unset. Provenance is
+the **layer** (global vs local); the deploying profile is not recoverable from
+disk and is not shown. Exits 0 on success (drift never fails it); an unknown
+`-a` agent id is a usage error and exits 2 with the list of valid agents.
 
 `~/.claude.json` is **never shown** — it is Claude Code's own state file, not a
 twagent artifact.
@@ -146,12 +147,14 @@ twagent info                    # local layer only (default)
 twagent info --global           # also include the global layer
 twagent info -a claude-code     # one agent (repeatable)
 twagent info --json             # machine-readable
+twagent info --show-secrets     # reveal exact raw MCP files
 ```
 
-> **⚠ Security:** `info` prints MCP files **verbatim, including resolved
-> `${VAR}` secrets** (API keys, tokens). This is intentional — full content for
-> human inspection — and deviates from `diff`/`apply`, which redact by default.
-> Don't paste `info` output into issues or share the scrollback.
+> **Security:** `info` masks only values derived from canonical `${VAR}`
+> expressions. Literal credentials and values belonging to foreign servers are
+> not recognized as secrets. Use interpolation for credentials. Passing
+> `--show-secrets` prints the exact raw file, so do not share that output or its
+> terminal scrollback.
 
 ---
 

@@ -1,8 +1,10 @@
 """`twagent info`: disk-reality read-out with provenance + status."""
 
+import json
 import os
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -279,7 +281,7 @@ mcp = [".mcp.json"]
     return load(config_path), cwd
 
 
-def test_mcp_section_captures_raw_content_including_secrets(tmp_path):
+def test_mcp_section_preserves_literal_values(tmp_path):
     body = '{"mcpServers": {"gh": {"env": {"TOKEN": "ghp_SECRET123"}}}}'
     config, cwd = _mcp_world(tmp_path, body)
     report = collect_info(config, cwd, include_global=True)
@@ -289,9 +291,137 @@ def test_mcp_section_captures_raw_content_including_secrets(tmp_path):
     ][0]
     assert global_mcp.render_as == "mcp"
     assert global_mcp.content_format == "json"
-    # Deliberate per spec Q2=B: raw content is shown verbatim, secrets included.
-    assert global_mcp.content == body
+    assert json.loads(global_mcp.content) == json.loads(body)
     assert "ghp_SECRET123" in global_mcp.content
+    assert global_mcp.variables_masked is True
+
+
+def _interpolated_mcp_world(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    deployed_token: str = "real_secret_value",
+    env_file: str | None = None,
+):
+    monkeypatch.delenv("REGION", raising=False)
+    if env_file is None:
+        monkeypatch.setenv("TOKEN", "real_secret_value")
+        env_file_line = ""
+    else:
+        monkeypatch.delenv("TOKEN", raising=False)
+        (tmp_path / "secrets.env").write_text(env_file)
+        env_file_line = 'env_file = "secrets.env"\n'
+
+    body = (
+        '{"mcpServers":{"gh":{"env":{'
+        f'"TOKEN":"{deployed_token}",'
+        '"AUTH":"Bearer real_secret_value",'
+        '"REGION":"eu-central-1",'
+        '"LITERAL":"visible"}},'
+        '"external":{"env":{"TOKEN":"literal_external"}}}}'
+    )
+    mcp_file = tmp_path / "home" / "claude" / "mcp.json"
+    mcp_file.parent.mkdir(parents=True)
+    mcp_file.write_text(body)
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        env_file_line
+        + f"""\
+schema_version = 3
+[agents.claude-code]
+capabilities = ["mcp"]
+mcp_format = "claude-code"
+[agents.claude-code.paths.global]
+mcp = ["{mcp_file}"]
+[agents.claude-code.paths.project]
+mcp = [".mcp.json"]
+[agents.claude-code.vars]
+[servers.gh]
+type = "stdio"
+command = "server"
+[servers.gh.env]
+TOKEN = "${{TOKEN}}"
+AUTH = "Bearer ${{TOKEN}}"
+REGION = "${{REGION:-eu-central-1}}"
+LITERAL = "visible"
+[profiles.p]
+"""
+    )
+    return load(config_path), cwd, body
+
+
+def test_mcp_section_masks_set_variables_and_shows_defaults(tmp_path, monkeypatch):
+    config, cwd, _ = _interpolated_mcp_world(tmp_path, monkeypatch)
+
+    report = collect_info(config, cwd, include_global=True)
+
+    section = [s for s in report.agents[0].sections if s.layer == "global"][0]
+    content = json.loads(section.content)
+    assert content["mcpServers"]["gh"]["env"] == {
+        "TOKEN": "***",
+        "AUTH": "Bearer ***",
+        "REGION": "eu-central-1",
+        "LITERAL": "visible",
+    }
+    assert content["mcpServers"]["external"]["env"]["TOKEN"] == "literal_external"
+    assert section.variables_masked is True
+
+
+def test_mcp_section_masks_dotenv_variable(tmp_path, monkeypatch):
+    config, cwd, _ = _interpolated_mcp_world(
+        tmp_path,
+        monkeypatch,
+        deployed_token="dotenv_secret",
+        env_file="TOKEN=dotenv_secret\n",
+    )
+
+    report = collect_info(config, cwd, include_global=True)
+
+    section = [s for s in report.agents[0].sections if s.layer == "global"][0]
+    assert "dotenv_secret" not in section.content
+    assert '"TOKEN": "***"' in section.content
+
+
+def test_mcp_section_masks_whole_mismatched_interpolated_field(tmp_path, monkeypatch):
+    config, cwd, _ = _interpolated_mcp_world(
+        tmp_path,
+        monkeypatch,
+        deployed_token="stale_secret",
+    )
+
+    report = collect_info(config, cwd, include_global=True)
+
+    section = [s for s in report.agents[0].sections if s.layer == "global"][0]
+    content = json.loads(section.content)
+    assert content["mcpServers"]["gh"]["env"]["TOKEN"] == "***"
+    assert "stale_secret" not in section.content
+
+
+def test_mcp_section_show_secrets_preserves_exact_raw_content(tmp_path, monkeypatch):
+    config, cwd, body = _interpolated_mcp_world(tmp_path, monkeypatch)
+
+    report = collect_info(config, cwd, include_global=True, show_secrets=True)
+
+    section = [s for s in report.agents[0].sections if s.layer == "global"][0]
+    assert section.content == body
+    assert section.variables_masked is False
+
+
+def test_mcp_section_withholds_unparseable_content_by_default(tmp_path, monkeypatch):
+    config, cwd, _ = _interpolated_mcp_world(tmp_path, monkeypatch)
+    mcp_path = config.agents["claude-code"].paths_global["mcp"][0]
+    mcp_path.write_text("[not json")
+
+    masked = collect_info(config, cwd, include_global=True)
+    raw = collect_info(config, cwd, include_global=True, show_secrets=True)
+
+    masked_section = [s for s in masked.agents[0].sections if s.layer == "global"][0]
+    raw_section = [s for s in raw.agents[0].sections if s.layer == "global"][0]
+    assert masked_section.content is None
+    assert "content withheld" in masked_section.error
+    assert raw_section.content == "[not json"
 
 
 def test_codex_mcp_section_records_toml_content_format(tmp_path):
@@ -325,6 +455,49 @@ mcp = [".codex/config.toml"]
         if section.kind == "mcp" and section.layer == "global"
     ][0]
     assert global_mcp.content_format == "toml"
+
+
+def test_codex_mcp_masks_interpolated_headers_and_preserves_foreign_tables(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TOKEN", "real_secret_value")
+    mcp_file = tmp_path / "home" / "codex" / "config.toml"
+    mcp_file.parent.mkdir(parents=True)
+    mcp_file.write_text(
+        '# hand-written by Tom\n[projects."/p"]\ntrust_level = "trusted"\n\n'
+        '[mcp_servers.docs]\nurl = "https://example.com/mcp"\n\n'
+        '[mcp_servers.docs.http_headers]\nAuthorization = "real_secret_value"\n'
+    )
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""\
+schema_version = 3
+[agents.codex]
+capabilities = ["mcp"]
+mcp_format = "codex"
+[agents.codex.paths.global]
+mcp = ["{mcp_file}"]
+[agents.codex.paths.project]
+mcp = [".codex/config.toml"]
+[agents.codex.vars]
+[servers.docs]
+type = "http"
+url = "https://example.com/mcp"
+[servers.docs.headers]
+Authorization = "${{TOKEN}}"
+[profiles.p]
+"""
+    )
+
+    report = collect_info(load(config_path), cwd, include_global=True)
+
+    section = [s for s in report.agents[0].sections if s.layer == "global"][0]
+    content = tomllib.loads(section.content)
+    assert content["mcp_servers"]["docs"]["http_headers"]["Authorization"] == "***"
+    assert content["projects"]["/p"]["trust_level"] == "trusted"
+    assert "# hand-written by Tom" in section.content
 
 
 def test_mcp_section_absent_file_has_no_content(tmp_path):

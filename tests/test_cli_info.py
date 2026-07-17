@@ -103,6 +103,7 @@ def test_mcp_human_output_uses_content_format_and_terminal_theme(capsys):
         render_as="mcp",
         content='[mcp_servers.docs]\nurl = "https://example.com/mcp"\n',
         content_format="toml",
+        variables_masked=True,
     )
 
     with patch("twagent.cli.Syntax") as syntax:
@@ -114,7 +115,60 @@ def test_mcp_human_output_uses_content_format_and_terminal_theme(capsys):
         theme="ansi_dark",
         word_wrap=True,
     )
-    assert "TOML" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "TOML" in output
+    assert "resolved variables masked" in output
+
+
+def test_info_masks_json_content_by_default_and_show_secrets_reveals(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TOKEN", "real_secret_value")
+    mcp_file = tmp_path / "mcp.json"
+    mcp_file.write_text(
+        '{"mcpServers":{"gh":{"env":{"TOKEN":"real_secret_value"}}}}'
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""\
+schema_version = 3
+[agents.c]
+capabilities = ["mcp"]
+mcp_format = "claude-code"
+[agents.c.paths.global]
+mcp = ["{mcp_file}"]
+[agents.c.paths.project]
+mcp = [".mcp.json"]
+[agents.c.vars]
+[servers.gh]
+type = "stdio"
+command = "server"
+env = {{ TOKEN = "${{TOKEN}}" }}
+[profiles.p]
+"""
+    )
+
+    masked = runner.invoke(
+        app, ["--config", str(config_path), "info", "--global", "--json"]
+    )
+    raw = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config_path),
+            "info",
+            "--global",
+            "--json",
+            "--show-secrets",
+        ],
+    )
+
+    assert masked.exit_code == 0
+    assert "real_secret_value" not in masked.output
+    masked_section = json.loads(masked.output)["agents"][0]["sections"][0]
+    assert masked_section["variables_masked"] is True
+    assert raw.exit_code == 0
+    assert "real_secret_value" in raw.output
 
 
 def test_info_unknown_agent_errors_and_lists_available(tmp_path):
