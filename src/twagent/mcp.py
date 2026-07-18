@@ -257,9 +257,10 @@ def transform_for_format(servers: dict[str, "Server"], profile: FormatProfile) -
                         f"servers.{name}.{field_name}.{key}: variable defaults are "
                         "not supported"
                     )
-                if profile.name in {"vscode", "opencode"} and contains_variable_reference(
-                    value
-                ):
+                if profile.name in {
+                    "vscode",
+                    "opencode",
+                } and contains_variable_reference(value):
                     raise ValueError(
                         f"servers.{name}.{field_name}.{key}: runtime references are "
                         f"not verified for mcp_format '{profile.name}'"

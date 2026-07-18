@@ -40,7 +40,6 @@ LINKED_KINDS: tuple[str, ...] = ("skills", "subagents", "prompts")
 _EXCLUDED_PATHS: frozenset[Path] = frozenset({Path.home() / ".claude.json"})
 
 
-
 @dataclass
 class Entry:
     """One filesystem entry inside a scanned capability directory."""
