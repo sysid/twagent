@@ -18,7 +18,7 @@ each expecting their own files in their own places:
 
 Keeping them in sync by hand is the kind of toil that quietly breaks: a new
 skill gets copied to two agents and forgotten on the third; an MCP token
-rotates and one client keeps the old value. **twagent** is one canonical
+reference drifts between clients. **twagent** is one canonical
 TOML that owns the truth, plus one CLI that materialises it onto disk.
 
 ## Choose your path

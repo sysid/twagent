@@ -10,7 +10,9 @@ Pi, Codex, VS Code, opencode. **One canonical TOML, one CLI, two deploy modes.**
 - **One config** at `~/.config/twagent/config.toml` describes every skill,
   subagent, prompt, instruction template, and MCP server you care about.
 - **One CLI** (`twagent apply`) renders Jinja templates, symlinks file
-  artifacts, and compiles MCP JSON in each agent's native shape.
+  artifacts, and compiles MCP configuration in each agent's native shape.
+- **Runtime secrets** stay as `${VAR}` references (or Codex's environment-backed
+  fields), so `twagent` never writes resolved credentials.
 - **Two deploy modes**: globally (each agent's default profile to
   `~/.claude/`, `~/.copilot/`, etc.) or locally (into the current directory).
 

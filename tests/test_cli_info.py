@@ -117,7 +117,7 @@ def test_mcp_human_output_uses_content_format_and_terminal_theme(capsys):
     )
     output = capsys.readouterr().out
     assert "TOML" in output
-    assert "resolved variables masked" in output
+    assert "legacy runtime values masked" in output
 
 
 def test_info_masks_json_content_by_default_and_show_secrets_reveals(

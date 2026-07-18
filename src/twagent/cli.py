@@ -193,18 +193,18 @@ Examples:
   cd ~/dev/myrepo
   twagent apply -s e2e-emea                  # local (default): deploy to cwd
   twagent apply -s core -a claude-code       # local, single agent
-  twagent apply -s foo,bar -n                # preview local deploy, masked
+  twagent apply -s foo,bar -n                # preview local deploy
   twagent apply -i                           # pick artifacts in a TUI (local)
   twagent apply -s tw-claude -i              # picker pre-checked with tw-claude
                                              # — add/remove from there
   twagent apply --global                     # sync everything globally
-  twagent apply --global -n                  # preview globals, secrets masked
+  twagent apply --global -n                  # preview globals
   twagent apply --global -a claude-code      # one agent globally
   twagent apply --global -s foo,bar          # override globals with this set
 
 Short flags:
   -G/--global  -a/--agent  -s/--select  -i/--interactive
-  -n/--dry-run -S/--show-secrets
+  -n/--dry-run
 """
 
 
@@ -259,20 +259,7 @@ def apply(
         False,
         "--dry-run",
         "-n",
-        help=(
-            "Show every write/symlink/render that WOULD happen, but change "
-            "nothing on disk. Resolved secrets are masked unless --show-secrets."
-        ),
-    ),
-    show_secrets: bool = typer.Option(
-        False,
-        "--show-secrets",
-        "-S",
-        help=(
-            "Reveal resolved values from ${VAR} interpolation in --dry-run "
-            "and 'diff' output. OFF by default — terminal scrollback leaks "
-            "secrets. Real files written to disk always contain real values."
-        ),
+        help="Show every write/symlink/render that WOULD happen; change nothing.",
     ),
     dedup: bool = typer.Option(
         True,
@@ -354,7 +341,6 @@ def apply(
                 select=select_list,
                 agent_filter=list(agent) if agent else None,
                 dry_run=dry_run,
-                show_secrets=show_secrets,
                 dedup=dedup,
             )
         except ValueError as exc:
@@ -367,7 +353,6 @@ def apply(
                 agent_filter=list(agent) if agent else None,
                 select=select_list,
                 dry_run=dry_run,
-                show_secrets=show_secrets,
             )
         except ValueError as exc:
             err_console.print(f"[red]{exc}[/red]")
@@ -425,25 +410,15 @@ Exit codes:
   0  in sync (nothing to do)
   1  divergence found (something is out of date)
 
-Resolved ${VAR} values are masked unless you pass --show-secrets.
+Runtime `${VAR}` references are compared without resolving their values.
 This command never writes to disk.
 """
 
 
 @app.command(help=_DIFF_HELP)
-def diff(
-    show_secrets: bool = typer.Option(
-        False,
-        "--show-secrets",
-        "-S",
-        help=(
-            "Reveal resolved values from ${VAR} interpolation in the diff. "
-            "OFF by default (terminal scrollback leaks secrets)."
-        ),
-    ),
-) -> None:
+def diff() -> None:
     config = _load_config()
-    report = compute_diff(config, show_secrets=show_secrets)
+    report = compute_diff(config)
     for line in report.lines:
         typer.echo(line)
     raise typer.Exit(0 if report.in_sync else 1)
@@ -500,9 +475,9 @@ Read-only; never writes; always exits 0. Use --json for scripting.
 Note: ~/.claude.json is never shown (it is Claude Code's own state file,
 not a twagent artifact).
 
-Resolved ${VAR} values are masked by default. Defaults from
-${VAR:-default} remain visible when the variable is unset. Literal values
-are not treated as secrets. Pass --show-secrets to print exact raw files.
+Runtime ${VAR} references are safe to display. Legacy resolved values in
+canonical reference-backed fields are masked by default. Literal values are
+not treated as secrets. Pass --show-secrets to print exact raw files.
 """
 
 _STATUS_STYLE = {
@@ -537,7 +512,7 @@ def info(
         "--show-secrets",
         "-S",
         help=(
-            "Reveal resolved values from ${VAR} interpolation. "
+            "Print exact raw MCP files, including legacy resolved values. "
             "OFF by default (terminal scrollback leaks secrets)."
         ),
     ),
@@ -614,7 +589,7 @@ def _render_section(section: Section) -> None:
             return
         assert section.content_format is not None
         exposure = (
-            "[green]🔒 resolved variables masked[/green]"
+            "[green]🔒 legacy runtime values masked[/green]"
             if section.variables_masked
             else "[red]⚠ raw — secrets shown[/red]"
         )
@@ -834,7 +809,7 @@ def _print_artefact_details(kind: str, item: "FileArtifact | Server") -> None:
         if item.tools:
             table.add_row("tools", ", ".join(item.tools))
         if item.env:
-            # Show keys only — values may be ${VAR}-interpolated secrets.
+            # Show keys only — literal values may still contain credentials.
             table.add_row("env (keys)", ", ".join(item.env))
         if item.headers:
             table.add_row("headers (keys)", ", ".join(item.headers))
@@ -1002,13 +977,9 @@ _STUB_CONFIG = """\
 # Schema:    contracts/config-schema.md
 # Data model: data-model.md
 
-# Schema migration knob. v3 introduced first-class `[instructions.<name>]`
-# registry; bump only when you upgrade twagent.
-schema_version = 3
-
-# Optional dotenv loaded BEFORE ${VAR} interpolation runs against MCP env/headers.
-# Path is relative to this config file. Env vars from os.environ override dotenv.
-# env_file = "secrets.env"
+# Schema migration knob. v4 moved MCP secret resolution to agent runtime.
+# Bump only when you upgrade twagent.
+schema_version = 4
 
 
 # ─── Common: shared variables ───────────────────────────────────────────
@@ -1023,7 +994,7 @@ work_email = "you@example.com"
 # An agent has:
 #   capabilities    : subset of {instructions, skills, subagents, prompts, mcp}
 #   mcp_format      : required iff "mcp" in capabilities; one of:
-#                     claude-code | copilot-cli | pi | codex | vscode | opencode
+#                     claude-code | copilot-cli | codex | vscode | opencode
 #                     (codex is the only TOML target; it omits `type` and
 #                      renames headers -> http_headers. See docs/reference/config.md)
 #   global_profile  : optional profile name; what `apply --global` deploys
@@ -1101,8 +1072,8 @@ description = "Persistent memory via the bkmr CLI"
 # ─── MCP servers (canonical, agent-agnostic) ───────────────────────────
 # Two types: "stdio" (process) or "http"/"sse" (URL). Per-agent quirks
 # (e.g. copilot-cli rewriting stdio → local) live in the mcp_format
-# translator, NOT here. ${VAR} and ${VAR:-default} interpolate inside
-# `env` and `headers` only.
+# translator, NOT here. ${VAR} references in `env` and `headers` are resolved
+# by the launched agent. Defaults such as ${VAR:-fallback} are rejected.
 
 # [servers.github]
 # type    = "stdio"

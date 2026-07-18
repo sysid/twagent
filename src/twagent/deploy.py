@@ -28,10 +28,8 @@ from twagent.config import (
     Configuration,
     FileArtifact,
     ProfileExpansion,
-    Server,
 )
 from twagent.expansion import expand_profile, needed_capabilities
-from twagent.interpolate import resolve_variables
 from twagent.mcp import get_format, serialize, transform_for_format, write_config
 from twagent.selector import resolve_selection
 
@@ -84,7 +82,7 @@ class DeployContext:
     expanded: ProfileExpansion
     result: ApplyResult
     dry_run: bool = False
-    show_secrets: bool = False
+    global_mode: bool = False
     dedup_global: set[str] | None = None
 
 
@@ -189,70 +187,19 @@ def compile_mcp_for_agent(
     config: Configuration,
     agent: Agent,
     server_names: list[str],
-    dry_run: bool = False,
-    show_secrets: bool = False,
 ) -> dict:
-    """Resolve interpolation, transform per agent.mcp_format, return JSON dict.
-
-    When dry_run AND not show_secrets, secret values from `${VAR}` interpolation
-    are masked in the returned dict (FR-023a).
-    """
+    """Preserve runtime references and transform into the agent MCP shape."""
     logger.debug(
-        "deploy.compile_mcp_for_agent: agent=%s mcp_format=%s servers=%d "
-        "dry_run=%s show_secrets=%s",
+        "deploy.compile_mcp_for_agent: agent=%s mcp_format=%s servers=%d",
         agent.id,
         agent.mcp_format,
         len(server_names),
-        dry_run,
-        show_secrets,
     )
     if agent.mcp_format is None:
         raise ValueError(f"agents.{agent.id}: mcp_format unset")
-
-    if dry_run and not show_secrets:
-        variables = {k: "***" for k in config.env_vars}
-    else:
-        variables = dict(config.env_vars)
-
-    resolved_servers: dict[str, Server] = {}
-    for name in server_names:
-        server = config.servers[name]
-        env = {
-            k: _resolve_or_mask(v, variables, dry_run, show_secrets)
-            for k, v in (server.env or {}).items()
-        } or None
-        headers = {
-            k: _resolve_or_mask(v, variables, dry_run, show_secrets)
-            for k, v in (server.headers or {}).items()
-        } or None
-        resolved_servers[name] = Server(
-            name=server.name,
-            type=server.type,
-            command=server.command,
-            args=server.args,
-            url=server.url,
-            tools=server.tools,
-            env=env,
-            headers=headers,
-        )
-
     profile = get_format(agent.mcp_format)
-    return transform_for_format(resolved_servers, profile)
-
-
-def _resolve_or_mask(
-    value: str,
-    variables: dict[str, str],
-    dry_run: bool,
-    show_secrets: bool,
-) -> str:
-    """Resolve ${VAR}; mask the resolved value in dry-run+mask mode."""
-    if dry_run and not show_secrets:
-        try:
-            return resolve_variables(value, variables)
-        except ValueError:
-            return value
-    return resolve_variables(value, variables)
+    servers = {name: config.servers[name] for name in server_names}
+    return transform_for_format(servers, profile)
 
 
 # ─── Top-level orchestrators (NEW in v2) ────────────────────────────────
@@ -263,7 +210,6 @@ def apply_global(
     agent_filter: list[str] | None = None,
     select: list[str] | None = None,
     dry_run: bool = False,
-    show_secrets: bool = False,
 ) -> ApplyResult:
     """Deploy each agent's global_profile to its paths.global.* paths.
 
@@ -272,11 +218,10 @@ def apply_global(
     "deploy this profile/artifact set globally for the day" overrides.
     """
     logger.debug(
-        "deploy.apply_global: agent_filter=%s select=%s dry_run=%s show_secrets=%s",
+        "deploy.apply_global: agent_filter=%s select=%s dry_run=%s",
         agent_filter,
         select,
         dry_run,
-        show_secrets,
     )
     selection_override: ProfileExpansion | None = (
         resolve_selection(select, config) if select is not None else None
@@ -285,7 +230,6 @@ def apply_global(
         config,
         agent_filter=agent_filter,
         dry_run=dry_run,
-        show_secrets=show_secrets,
         mode_label="global",
         resolve_expanded=lambda agent: _resolve_global_expansion(
             config, agent, selection_override, agent_filter
@@ -305,7 +249,6 @@ def apply_here(
     select: list[str],
     agent_filter: list[str] | None = None,
     dry_run: bool = False,
-    show_secrets: bool = False,
     dedup: bool = True,
 ) -> ApplyResult:
     """Ad-hoc local deployment: render the selection under cwd via paths.project.
@@ -322,13 +265,11 @@ def apply_here(
     agents read both layers and a local copy would duplicate them.
     """
     logger.debug(
-        "deploy.apply_here: cwd=%s select=%s agent_filter=%s dry_run=%s "
-        "show_secrets=%s dedup=%s",
+        "deploy.apply_here: cwd=%s select=%s agent_filter=%s dry_run=%s dedup=%s",
         cwd,
         select,
         agent_filter,
         dry_run,
-        show_secrets,
         dedup,
     )
     expanded = resolve_selection(select, config)
@@ -337,7 +278,6 @@ def apply_here(
         config,
         agent_filter=agent_filter,
         dry_run=dry_run,
-        show_secrets=show_secrets,
         mode_label="here",
         resolve_expanded=lambda agent: _resolve_here_expansion(
             agent, expanded, needed_caps, agent_filter
@@ -360,7 +300,6 @@ def _apply_to_agents(
     *,
     agent_filter: list[str] | None,
     dry_run: bool,
-    show_secrets: bool,
     mode_label: str,
     resolve_expanded: Callable[[Agent], "ProfileExpansion | _Skip | None"],
     cap_iter: Callable[[Agent, ProfileExpansion], list[str]],
@@ -438,7 +377,7 @@ def _apply_to_agents(
                 expanded=expanded,
                 result=result,
                 dry_run=dry_run,
-                show_secrets=show_secrets,
+                global_mode=mode_label == "global",
                 dedup_global=dedup_of(agent) if dedup_of else None,
             )
             _apply_one(ctx, capability, targets)
@@ -626,8 +565,6 @@ def _deploy_mcp(ctx: DeployContext, targets: list[Path]) -> None:
             config,
             agent,
             server_names,
-            dry_run=ctx.dry_run,
-            show_secrets=ctx.show_secrets,
         )
     except Exception as exc:
         result.errors.append(f"{agent.id}/mcp: {exc}")
@@ -641,7 +578,12 @@ def _deploy_mcp(ctx: DeployContext, targets: list[Path]) -> None:
             preview = serialize(compiled, serializer)
             result.dry_run_log.append(f"mcp → {target}\n{_indent(preview)}")
         else:
-            write_config(compiled, target, serializer)
+            write_config(
+                compiled,
+                target,
+                serializer,
+                mode=0o600 if ctx.global_mode else None,
+            )
             result.written.append(str(target))
 
 

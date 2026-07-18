@@ -16,11 +16,9 @@ from twagent.config import (
 # ─── Helpers ────────────────────────────────────────────────────────────
 
 
-def _write_config(tmp_path, body: str, env_file: str | None = None) -> "Configuration":
+def _write_config(tmp_path, body: str) -> "Configuration":
     config_path = tmp_path / "config.toml"
     config_path.write_text(body)
-    if env_file is not None:
-        (tmp_path / "secrets.env").write_text(env_file)
     return load(config_path)
 
 
@@ -426,15 +424,24 @@ source = "/tmp/y"
 # ─── env_file ───────────────────────────────────────────────────────────
 
 
-def test_env_file_loaded_when_declared(tmp_path):
+def test_env_file_is_rejected_with_runtime_environment_guidance(tmp_path):
     body = 'env_file = "secrets.env"\n' + MINIMAL_OK
-    config = _write_config(tmp_path, body, env_file="MY_KEY=my_value\n")
-    assert config.env_vars["MY_KEY"] == "my_value"
+    with pytest.raises(ConfigError, match="env_file.*launch environment"):
+        _write_config(tmp_path, body)
 
 
-def test_missing_env_file_raises(tmp_path):
-    body = 'env_file = "ghost.env"\n' + MINIMAL_OK
-    with pytest.raises(FileNotFoundError):
+@pytest.mark.parametrize("field", ["env", "headers"])
+def test_mcp_variable_defaults_are_rejected(tmp_path, field):
+    body = (
+        MINIMAL_OK
+        + '\n[servers.runtime]\ntype = "http"\nurl = "https://example.com/mcp"\n'
+        + f'[servers.runtime.{field}]\nTOKEN = "${{TOKEN:-fallback}}"\n'
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=rf"servers\.runtime\.{field}\.TOKEN.*defaults are not supported",
+    ):
         _write_config(tmp_path, body)
 
 
@@ -463,7 +470,7 @@ def test_full_sample_fixture_loads(fixtures_dir, monkeypatch):
     monkeypatch.setenv("CONFLUENCE_TOKEN", "test")
     with pytest.warns(UserWarning):
         config = load(fixtures_dir / "sample_config.toml")
-    assert config.schema_version == 3
+    assert config.schema_version == 4
     assert set(config.agents.keys()) == {"claude-code", "copilot-cli", "pi", "codex"}
     assert "tw" in config.profiles
     # Each agent has its global_profile attached now (no scopes).

@@ -24,8 +24,7 @@ The main command. Two modes; `--here` (local) is the default.
 | `--agent <id>` | `-a` | Repeatable. Restrict to specific agents. |
 | `--select <names>` | `-s` | CSV of profile names AND/OR artifact names. `none` deploys empty. |
 | `--interactive` | `-i` | Open a terminal picker. Honors `--select` as pre-checked items (expanded). |
-| `--dry-run` | `-n` | Show the plan, write nothing. Secrets masked unless `--show-secrets`. |
-| `--show-secrets` | `-S` | Reveal `${VAR}`-resolved values in dry-run output. |
+| `--dry-run` | `-n` | Show the plan, write nothing. Runtime `${VAR}` references remain visible. |
 | `--dedup` / `--no-dedup` | — | Local mode only. Skip skills/subagents/prompts already in the agent's `paths.global.*`. Default ON. |
 
 MCP writes **merge** into the target file: twagent owns only the format's
@@ -38,7 +37,7 @@ target is an error — never overwritten.
 
 ```bash
 twagent apply --global                     # everything globally, idempotent
-twagent apply --global -n                  # preview, secrets masked
+twagent apply --global -n                  # preview with runtime references
 twagent apply --global -a claude-code      # one agent globally
 twagent apply --global -s e2e-emea         # swap MCP env for the day, all agents
 twagent apply --global -s e2e-emea -a copilot-cli  # one agent, MCP only
@@ -133,10 +132,11 @@ globals only), `info` reads disk reality and tags every entry:
 
 Instructions are reported present/absent (the rendered file's source name is
 not recoverable from disk). MCP files use syntax highlighting matching their
-JSON or TOML wire format. Resolved `${VAR}` values are masked by default;
-`${VAR:-default}` shows its default when the variable is unset. Provenance is
-the **layer** (global vs local); the deploying profile is not recoverable from
-disk and is not shown. Exits 0 on success (drift never fails it); an unknown
+JSON or TOML wire format. Runtime `${VAR}` references and Codex environment
+variable names remain visible. Legacy resolved values in canonical
+reference-backed fields are masked by default. Provenance is the **layer**
+(global vs local); the deploying profile is not recoverable from disk and is
+not shown. Exits 0 on success (drift never fails it); an unknown
 `-a` agent id is a usage error and exits 2 with the list of valid agents.
 
 `~/.claude.json` is **never shown** — it is Claude Code's own state file, not a
@@ -150,9 +150,9 @@ twagent info --json             # machine-readable
 twagent info --show-secrets     # reveal exact raw MCP files
 ```
 
-> **Security:** `info` masks only values derived from canonical `${VAR}`
-> expressions. Literal credentials and values belonging to foreign servers are
-> not recognized as secrets. Use interpolation for credentials. Passing
+> **Security:** `info` masks stale values only at fields backed by canonical
+> `${VAR}` expressions. Literal credentials and values belonging to foreign
+> servers are not recognized as secrets. Use runtime references for credentials. Passing
 > `--show-secrets` prints the exact raw file, so do not share that output or its
 > terminal scrollback.
 
@@ -265,4 +265,4 @@ twagent --version
 |---|---|
 | `EDITOR` | Used by `twagent edit`. Default: `vi`. |
 | `TWAGENT_NO_FZF` | If `1`, force the simple-term-menu fallback even when fzf is installed. |
-| (any `${VAR}` in MCP `env` / `headers`) | Resolved at deploy time. See [Configuration § Interpolation](config.md#interpolation--secrets). |
+| (any `${VAR}` in MCP `env` / `headers`) | Read by the launched agent at runtime. See [Configuration § Runtime references](config.md#runtime-references--secrets). |

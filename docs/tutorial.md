@@ -152,10 +152,10 @@ args    = ["-y", "@modelcontextprotocol/server-github"]
 env     = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 ```
 
-The `${GITHUB_TOKEN}` placeholder is resolved from your shell environment
-(or from a dotenv file declared via top-level `env_file = "secrets.env"`)
-at deploy time. Resolved values are masked in `--dry-run`, `diff`, and `info`
-output unless you pass `--show-secrets`.
+`twagent` preserves `${GITHUB_TOKEN}` in the generated file. Claude Code and
+Copilot resolve it from the environment that launches the agent; Codex receives
+the equivalent `env_vars = ["GITHUB_TOKEN"]`. Export the variable before
+starting the agent. Defaults such as `${GITHUB_TOKEN:-XXX}` are rejected.
 
 ## Step 4 — Wire it into a profile
 
@@ -240,9 +240,9 @@ toolset; `.gitignore` it if individual.
 1. **Compose profiles via `extends`.** Make a `base` profile, then a `tw`
    profile that `extends = ["base"]` and adds extras. Run `twagent profiles`
    to see the expansion.
-2. **Add Pi as a third agent.** It supports `instructions`, `skills`, `mcp`
-   but not `subagents` — twagent will silently skip any subagent in a
-   profile that targets pi.
+2. **Add Pi as a third agent.** It supports `instructions` and `skills`, but
+   not `subagents` or MCP without a selected extension. twagent silently skips
+   profile kinds the Pi agent does not declare.
 3. **Use `extract`** to import an existing per-agent MCP file:
    `twagent extract ~/.claude.json >> ~/.config/twagent/config.toml`,
    then edit out duplicates.

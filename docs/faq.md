@@ -22,10 +22,10 @@ If you still have either installed, removing them is safe once your
 ### Which agents are supported?
 
 Out of the box: **claude-code**, **copilot-cli**, **pi**, **codex**,
-**vscode**, **opencode** (the values accepted in `mcp_format`). Adding a new
-agent is a TOML-only operation unless its MCP wire shape is genuinely new —
-**codex** is the one case where it was, so it has a dedicated builder and is
-the only target written as TOML rather than JSON.
+**vscode**, **opencode**. MCP formats currently exist for every listed agent
+except Pi, whose MCP support depends on an extension that has not been selected.
+Adding an agent is TOML-only unless its MCP wire shape is genuinely new —
+**codex** has a dedicated builder and is the only TOML target.
 
 ## Getting started
 
@@ -63,12 +63,12 @@ missing variable is a hard error, not a silent empty string.
 Yes. Set multiple paths in `paths.global.instructions` (or `paths.project.instructions`).
 The same rendered output is written to all of them.
 
-### Why are my secrets showing as `***` in `--dry-run`, `diff`, or `info`?
+### Why does `info` show `***` for an old MCP value?
 
-By design — terminal scrollback leaks. Real files on disk always contain
-real values. Pass `--show-secrets` (`-S`) to reveal them when you actually need
-to inspect. Only values derived from `${VAR}` are masked; literal credentials
-remain visible.
+Schema 4 preserves `${VAR}` references so new files contain no resolved secret.
+`info` still masks stale plaintext at canonical reference-backed positions to
+make migration safe. Use `info --show-secrets` only when you deliberately need
+the exact raw file; literal credentials and foreign servers remain visible.
 
 ## Usage
 

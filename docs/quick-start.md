@@ -82,7 +82,7 @@ live across every agent that supports it.
 
 | Step | What twagent did |
 |---|---|
-| Read config | Parsed `~/.config/twagent/config.toml`, validated schema v3. |
+| Read config | Parsed `~/.config/twagent/config.toml`, validated schema v4. |
 | Resolved profile | `claude-code`'s `global_profile = "minimal"` → its skill list. |
 | Materialised | Created `~/.claude/skills/bkmr-memory` as a symlink. |
 | Rendered | Filled in `~/.claude/CLAUDE.md` from the Jinja template with your `[common.vars]` overlaid by `[agents.claude-code.vars]`. |

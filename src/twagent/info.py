@@ -17,16 +17,15 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 import tomlkit
 from tomlkit.exceptions import ParseError as TOMLParseError
 
-from twagent.config import Agent, Configuration, FileArtifact, Server
-from twagent.interpolate import resolve_for_display
-from twagent.mcp import get_format, serialize, transform_for_format
+from twagent.config import Agent, Configuration, FileArtifact
+from twagent.mcp import get_format, redact_legacy_runtime_values, serialize
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +39,6 @@ LINKED_KINDS: tuple[str, ...] = ("skills", "subagents", "prompts")
 # not even under --global. (Tom, 2026-06-20.)
 _EXCLUDED_PATHS: frozenset[Path] = frozenset({Path.home() / ".claude.json"})
 
-_INTERPOLATED = object()
-_UNRESOLVED = object()
 
 
 @dataclass
@@ -191,71 +188,6 @@ def _scan_instructions(file_path: Path, layer: str) -> Section:
     )
 
 
-def _server_redaction_variants(
-    server: Server, variables: dict[str, str]
-) -> tuple[Server, Server, Server]:
-    """Build expected, masked, and provenance-marked forms of one server."""
-
-    def _values(
-        values: dict[str, str] | None,
-    ) -> tuple[dict[str, str] | None, dict[str, str] | None, dict[str, str] | None]:
-        if not values:
-            return None, None, None
-        expected: dict[str, str] = {}
-        masked: dict[str, str] = {}
-        markers: dict[str, str] = {}
-        for key, value in values.items():
-            display = resolve_for_display(value, variables)
-            expected[key] = (
-                cast(str, _UNRESOLVED) if display.resolved is None else display.resolved
-            )
-            masked[key] = display.masked
-            markers[key] = cast(str, _INTERPOLATED) if display.interpolated else value
-        return expected, masked, markers
-
-    expected_env, masked_env, marked_env = _values(server.env)
-    expected_headers, masked_headers, marked_headers = _values(server.headers)
-    return (
-        replace(server, env=expected_env, headers=expected_headers),
-        replace(server, env=masked_env, headers=masked_headers),
-        replace(server, env=marked_env, headers=marked_headers),
-    )
-
-
-def _redact_like(
-    current: object,
-    expected: object,
-    masked: object,
-    markers: object,
-) -> object:
-    """Apply transformed interpolation provenance to parsed deployed data."""
-    if markers is _INTERPOLATED:
-        if expected is _UNRESOLVED or current != expected:
-            return "***"
-        return masked
-    if isinstance(markers, dict):
-        if not isinstance(current, dict):
-            return "***"
-        current_dict = cast(dict[str, object], current)
-        marker_dict = cast(dict[str, object], markers)
-        expected_dict = (
-            cast(dict[str, object], expected) if isinstance(expected, dict) else {}
-        )
-        masked_dict = (
-            cast(dict[str, object], masked) if isinstance(masked, dict) else {}
-        )
-        for key, marker_value in marker_dict.items():
-            if key not in current_dict:
-                continue
-            current_dict[key] = _redact_like(
-                current_dict[key],
-                expected_dict.get(key),
-                masked_dict.get(key),
-                marker_value,
-            )
-    return current
-
-
 def _parse_mcp_content(content: str, content_format: str) -> dict:
     if content_format == "json":
         try:
@@ -290,20 +222,8 @@ def _redact_mcp_content(
         name: config.servers[name] for name in server_names if name in config.servers
     }
 
-    expected_servers: dict[str, Server] = {}
-    masked_servers: dict[str, Server] = {}
-    marked_servers: dict[str, Server] = {}
-    for name, server in canonical.items():
-        expected, masked, marked = _server_redaction_variants(server, config.env_vars)
-        expected_servers[name] = expected
-        masked_servers[name] = masked
-        marked_servers[name] = marked
-
-    expected = transform_for_format(expected_servers, profile)
-    masked = transform_for_format(masked_servers, profile)
-    markers = transform_for_format(marked_servers, profile)
-    redacted = _redact_like(current, expected, masked, markers)
-    return serialize(cast(dict, redacted), profile.serializer)
+    redact_legacy_runtime_values(current, canonical, profile)
+    return serialize(current, profile.serializer)
 
 
 def _scan_mcp(

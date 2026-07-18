@@ -301,22 +301,12 @@ def _interpolated_mcp_world(
     monkeypatch,
     *,
     deployed_token: str = "real_secret_value",
-    env_file: str | None = None,
+    deployed_auth: str = "Bearer real_secret_value",
 ):
-    monkeypatch.delenv("REGION", raising=False)
-    if env_file is None:
-        monkeypatch.setenv("TOKEN", "real_secret_value")
-        env_file_line = ""
-    else:
-        monkeypatch.delenv("TOKEN", raising=False)
-        (tmp_path / "secrets.env").write_text(env_file)
-        env_file_line = 'env_file = "secrets.env"\n'
-
     body = (
         '{"mcpServers":{"gh":{"env":{'
         f'"TOKEN":"{deployed_token}",'
-        '"AUTH":"Bearer real_secret_value",'
-        '"REGION":"eu-central-1",'
+        f'"AUTH":"{deployed_auth}",'
         '"LITERAL":"visible"}},'
         '"external":{"env":{"TOKEN":"literal_external"}}}}'
     )
@@ -327,8 +317,7 @@ def _interpolated_mcp_world(
     cwd.mkdir()
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        env_file_line
-        + f"""\
+        f"""\
 schema_version = 3
 [agents.claude-code]
 capabilities = ["mcp"]
@@ -344,7 +333,6 @@ command = "server"
 [servers.gh.env]
 TOKEN = "${{TOKEN}}"
 AUTH = "Bearer ${{TOKEN}}"
-REGION = "${{REGION:-eu-central-1}}"
 LITERAL = "visible"
 [profiles.p]
 """
@@ -352,7 +340,7 @@ LITERAL = "visible"
     return load(config_path), cwd, body
 
 
-def test_mcp_section_masks_set_variables_and_shows_defaults(tmp_path, monkeypatch):
+def test_mcp_section_masks_legacy_resolved_variables(tmp_path, monkeypatch):
     config, cwd, _ = _interpolated_mcp_world(tmp_path, monkeypatch)
 
     report = collect_info(config, cwd, include_global=True)
@@ -361,27 +349,27 @@ def test_mcp_section_masks_set_variables_and_shows_defaults(tmp_path, monkeypatc
     content = json.loads(section.content)
     assert content["mcpServers"]["gh"]["env"] == {
         "TOKEN": "***",
-        "AUTH": "Bearer ***",
-        "REGION": "eu-central-1",
+        "AUTH": "***",
         "LITERAL": "visible",
     }
     assert content["mcpServers"]["external"]["env"]["TOKEN"] == "literal_external"
     assert section.variables_masked is True
 
 
-def test_mcp_section_masks_dotenv_variable(tmp_path, monkeypatch):
+def test_mcp_section_preserves_runtime_references(tmp_path, monkeypatch):
     config, cwd, _ = _interpolated_mcp_world(
         tmp_path,
         monkeypatch,
-        deployed_token="dotenv_secret",
-        env_file="TOKEN=dotenv_secret\n",
+        deployed_token="${TOKEN}",
+        deployed_auth="Bearer ${TOKEN}",
     )
 
     report = collect_info(config, cwd, include_global=True)
 
     section = [s for s in report.agents[0].sections if s.layer == "global"][0]
-    assert "dotenv_secret" not in section.content
-    assert '"TOKEN": "***"' in section.content
+    content = json.loads(section.content)
+    assert content["mcpServers"]["gh"]["env"]["TOKEN"] == "${TOKEN}"
+    assert content["mcpServers"]["gh"]["env"]["AUTH"] == "Bearer ${TOKEN}"
 
 
 def test_mcp_section_masks_whole_mismatched_interpolated_field(tmp_path, monkeypatch):

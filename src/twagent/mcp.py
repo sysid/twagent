@@ -18,6 +18,12 @@ from typing import TYPE_CHECKING
 import tomlkit
 from tomlkit.exceptions import ParseError as TOMLParseError
 
+from twagent.interpolate import (
+    contains_variable_default,
+    contains_variable_reference,
+    exact_variable_reference,
+)
+
 if TYPE_CHECKING:
     from twagent.config import Server
 
@@ -96,14 +102,16 @@ def _codex_enabled_tools(tools: list[str] | None) -> list[str] | None:
 def _build_codex_server(server: "Server", _profile: FormatProfile) -> dict | None:
     """Build the codex shape for a single server. Returns None to skip.
 
-    Codex diverges from every JSON format on four points, which is why it has
+    Codex diverges from every JSON format, which is why it has
     its own builder rather than four more flags on FormatProfile. Each is
     pinned to codex's own McpServerConfig/McpServerTransportConfig
     (codex-rs/config/src/mcp_types.rs):
       - no `type` key: McpServerTransportConfig is `#[serde(untagged)]`, so
         transport is INFERRED from command vs url — and `deny_unknown_fields`
         means an emitted `type` would be a hard parse error, not noise.
-      - `http_headers`, not `headers`
+      - static `headers` → `http_headers`; runtime references use
+        `env_http_headers` or `bearer_token_env_var`
+      - same-name stdio `${VAR}` values → `env_vars`; literals stay in `env`
       - stdio and streamable-http only; there is no sse variant
       - `tools` → `enabled_tools`, which is "an explicit allow-list of tools
         exposed from this server" — literal tool NAMES with no wildcard
@@ -112,6 +120,16 @@ def _build_codex_server(server: "Server", _profile: FormatProfile) -> dict | Non
     """
     if server.type == "sse":
         return None
+    if server.type == "stdio" and server.headers:
+        raise ValueError(
+            f"servers.{server.name}.headers: mcp_format 'codex' supports headers "
+            "only for HTTP servers"
+        )
+    if server.type == "http" and server.env:
+        raise ValueError(
+            f"servers.{server.name}.env: mcp_format 'codex' supports env and "
+            "env_vars only for stdio servers"
+        )
 
     result: dict = {}
     if server.command:
@@ -121,12 +139,53 @@ def _build_codex_server(server: "Server", _profile: FormatProfile) -> dict | Non
     if server.url:
         result["url"] = server.url
     if server.headers:
-        result["http_headers"] = dict(server.headers)
+        static_headers: dict[str, str] = {}
+        env_headers: dict[str, str] = {}
+        for header, value in server.headers.items():
+            bearer_prefix = "Bearer "
+            bearer_var = (
+                exact_variable_reference(value[len(bearer_prefix) :])
+                if header == "Authorization" and value.startswith(bearer_prefix)
+                else None
+            )
+            env_var = exact_variable_reference(value)
+            if bearer_var is not None:
+                result["bearer_token_env_var"] = bearer_var
+            elif env_var is not None:
+                env_headers[header] = env_var
+            elif contains_variable_reference(value):
+                raise ValueError(
+                    f"servers.{server.name}.headers.{header}: reference {value!r} "
+                    "cannot be represented by mcp_format 'codex'"
+                )
+            else:
+                static_headers[header] = value
+        if static_headers:
+            result["http_headers"] = static_headers
+        if env_headers:
+            result["env_http_headers"] = env_headers
     enabled_tools = _codex_enabled_tools(server.tools)
     if enabled_tools is not None:
         result["enabled_tools"] = enabled_tools
     if server.env:
-        result["env"] = dict(server.env)
+        static_env: dict[str, str] = {}
+        env_vars: list[str] = []
+        for key, value in server.env.items():
+            env_var = exact_variable_reference(value)
+            if env_var == key:
+                env_vars.append(key)
+            elif contains_variable_reference(value):
+                raise ValueError(
+                    f"servers.{server.name}.env.{key}: reference {value!r} cannot "
+                    "be represented by mcp_format 'codex'; the variable name must "
+                    "match the environment key"
+                )
+            else:
+                static_env[key] = value
+        if static_env:
+            result["env"] = static_env
+        if env_vars:
+            result["env_vars"] = env_vars
 
     return result
 
@@ -144,13 +203,7 @@ FORMAT_REGISTRY: dict[str, FormatProfile] = {
         type_mapping={"stdio": "local"},
         header_style="flat",
     ),
-    "pi": FormatProfile(
-        name="pi",
-        top_level_key="mcpServers",
-        type_mapping={},
-        header_style="flat",
-    ),
-    # Schema accepts these for forward-compat; v1 doesn't exercise them in tests.
+    # Literal-only until their runtime-reference behavior is verified.
     "vscode": FormatProfile(
         name="vscode",
         top_level_key="servers",
@@ -187,7 +240,7 @@ def get_format(name: str) -> FormatProfile:
 
 
 def transform_for_format(servers: dict[str, "Server"], profile: FormatProfile) -> dict:
-    """Transform canonical servers dict into per-format JSON structure."""
+    """Transform canonical servers into the format's owned config subtree."""
     logger.debug(
         "mcp.transform_for_format: format=%s top_level_key=%s servers_in=%d",
         profile.name,
@@ -197,6 +250,20 @@ def transform_for_format(servers: dict[str, "Server"], profile: FormatProfile) -
     build = profile.builder or _build_server_dict
     out: dict = {}
     for name, server in servers.items():
+        for field_name, values in (("env", server.env), ("headers", server.headers)):
+            for key, value in (values or {}).items():
+                if contains_variable_default(value):
+                    raise ValueError(
+                        f"servers.{name}.{field_name}.{key}: variable defaults are "
+                        "not supported"
+                    )
+                if profile.name in {"vscode", "opencode"} and contains_variable_reference(
+                    value
+                ):
+                    raise ValueError(
+                        f"servers.{name}.{field_name}.{key}: runtime references are "
+                        f"not verified for mcp_format '{profile.name}'"
+                    )
         server_dict = build(server, profile)
         if server_dict is None:
             print(
@@ -207,6 +274,58 @@ def transform_for_format(servers: dict[str, "Server"], profile: FormatProfile) -
             continue
         out[name] = server_dict
     return {profile.top_level_key: out}
+
+
+def redact_legacy_runtime_values(
+    current: dict,
+    servers: dict[str, "Server"],
+    profile: FormatProfile,
+) -> None:
+    """Mask stale resolved values while leaving runtime references readable.
+
+    This operates structurally from canonical reference-bearing fields, so it
+    does not need the secret value or access to the launch environment.
+    """
+    current_servers = current.get(profile.top_level_key)
+    if not isinstance(current_servers, dict):
+        return
+
+    for name, server in servers.items():
+        deployed = current_servers.get(name)
+        if not isinstance(deployed, dict):
+            continue
+
+        for key, canonical_value in (server.env or {}).items():
+            if not contains_variable_reference(canonical_value):
+                continue
+            deployed_env = deployed.get("env")
+            if (
+                isinstance(deployed_env, dict)
+                and key in deployed_env
+                and deployed_env[key] != canonical_value
+            ):
+                deployed_env[key] = "***"
+
+        for header, canonical_value in (server.headers or {}).items():
+            if not contains_variable_reference(canonical_value):
+                continue
+            if profile.name == "codex":
+                deployed_headers = deployed.get("http_headers")
+            elif profile.header_style == "nested":
+                request_init = deployed.get("requestInit")
+                deployed_headers = (
+                    request_init.get("headers")
+                    if isinstance(request_init, dict)
+                    else None
+                )
+            else:
+                deployed_headers = deployed.get("headers")
+            if (
+                isinstance(deployed_headers, dict)
+                and header in deployed_headers
+                and deployed_headers[header] != canonical_value
+            ):
+                deployed_headers[header] = "***"
 
 
 def serialize(data: dict, serializer: str) -> str:
@@ -242,7 +361,12 @@ def _parse_existing(text: str, serializer: str, path: Path) -> dict:
     raise ValueError(f"unknown serializer: {serializer!r}")
 
 
-def write_config(compiled: dict, path: Path, serializer: str = "json") -> None:
+def write_config(
+    compiled: dict,
+    path: Path,
+    serializer: str = "json",
+    mode: int | None = None,
+) -> None:
     """Merge compiled MCP config into the file at `path`.
 
     Merge, don't replace: targets like ~/.claude.json and ~/.codex/config.toml
@@ -254,6 +378,8 @@ def write_config(compiled: dict, path: Path, serializer: str = "json") -> None:
 
     The update-in-place below is what makes that guarantee hold: never rebuild
     the document from parsed data, or TOML comments and formatting are lost.
+    When `mode` is set, the target is tightened before writing; global deploys
+    use this to keep MCP state owner-readable only.
     """
     existing: dict = {}
     if path.exists():
@@ -269,4 +395,7 @@ def write_config(compiled: dict, path: Path, serializer: str = "json") -> None:
         len(payload),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is not None:
+        path.touch(mode=mode, exist_ok=True)
+        path.chmod(mode)
     path.write_text(payload)

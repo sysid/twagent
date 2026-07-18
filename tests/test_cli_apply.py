@@ -1,6 +1,7 @@
 """Tests for `twagent apply` — global + here modes, polymorphic --select."""
 
 import json
+import stat
 import tomllib
 
 import pytest
@@ -151,30 +152,63 @@ def test_dry_run_writes_nothing(real_world_config):
 # ─── Secret masking (FR-023a) ───────────────────────────────────────────
 
 
-def test_dry_run_masks_resolved_secrets(real_world_config):
+def test_dry_run_preserves_runtime_reference(real_world_config):
     cfg = real_world_config["config"]
     result = runner.invoke(
         app, ["--config", str(cfg), "apply", "--global", "--dry-run"]
     )
     assert "ghs_real_token" not in result.output
-    assert "***" in result.output
+    assert "${GITHUB_TOKEN}" in result.output
 
 
-def test_show_secrets_reveals_resolved_secrets(real_world_config):
+def test_apply_rejects_removed_show_secrets_option(real_world_config):
     cfg = real_world_config["config"]
     result = runner.invoke(
         app, ["--config", str(cfg), "apply", "--global", "--dry-run", "--show-secrets"]
     )
-    assert "ghs_real_token" in result.output
+    assert result.exit_code == 2
+    assert "No such option" in result.output
 
 
-def test_real_apply_writes_actual_secret_to_disk(real_world_config):
-    """Masking is presentation-only; the real file on disk has real values."""
+def test_real_apply_writes_runtime_reference_without_reading_secret(
+    real_world_config, monkeypatch
+):
     cfg = real_world_config["config"]
     claude_root = real_world_config["claude_root"]
-    runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+    monkeypatch.delenv("GITHUB_TOKEN")
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+    assert result.exit_code == 0, result.output
     mcp_json = json.loads((claude_root / ".claude.json").read_text())
-    assert mcp_json["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "ghs_real_token"
+    assert mcp_json["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
+
+
+def test_global_mcp_file_is_owner_read_write_only(real_world_config):
+    cfg = real_world_config["config"]
+    target = real_world_config["claude_root"] / ".claude.json"
+    target.write_text("{}")
+    target.chmod(0o644)
+
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "--global"])
+
+    assert result.exit_code == 0, result.output
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_project_mcp_file_keeps_existing_permissions(
+    real_world_config, tmp_path, monkeypatch
+):
+    cfg = real_world_config["config"]
+    project = tmp_path / "project-permissions"
+    project.mkdir()
+    target = project / ".mcp.json"
+    target.write_text("{}")
+    target.chmod(0o644)
+    monkeypatch.chdir(project)
+
+    result = runner.invoke(app, ["--config", str(cfg), "apply", "-s", "github"])
+
+    assert result.exit_code == 0, result.output
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
 # ─── Polymorphic --select (NEW in v2) ───────────────────────────────────
@@ -524,8 +558,6 @@ source = "{tpl_b}"
 @pytest.fixture
 def codex_config(tmp_path, monkeypatch):
     """A codex agent whose MCP target is a pre-existing codex state file."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghs_real_token")
-
     skill_src = tmp_path / "skills_src" / "bkmr"
     skill_src.mkdir(parents=True)
     (skill_src / "SKILL.md").write_text("# bkmr skill")
@@ -609,7 +641,8 @@ def test_apply_preserves_codex_harness_state(codex_config):
     assert parsed["tui"]["model_availability_nux"]["gpt-5.6-sol"] == 1
     # ...and twagent's own subtree landed, in codex's shape.
     assert parsed["mcp_servers"]["github"]["command"] == "npx"
-    assert parsed["mcp_servers"]["github"]["env"] == {"GITHUB_TOKEN": "ghs_real_token"}
+    assert parsed["mcp_servers"]["github"]["env_vars"] == ["GITHUB_TOKEN"]
+    assert "env" not in parsed["mcp_servers"]["github"]
     assert "type" not in parsed["mcp_servers"]["github"]
 
 

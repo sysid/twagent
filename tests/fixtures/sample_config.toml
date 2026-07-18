@@ -1,8 +1,7 @@
 # Test fixture: covers all entity types from data-model.md.
 # Used by test_config.py (validation matrix) and downstream tests.
-# Schema v3: no [[scopes]]; instructions are first-class registry artifacts.
-schema_version = 3
-env_file = "secrets.env"
+# Schema v4: runtime MCP references replace deploy-time secret resolution.
+schema_version = 4
 
 [common.vars]
 user_name  = "Tom"
@@ -50,18 +49,15 @@ agent_name = "Copilot"
 extra_instructions = []
 
 [agents.pi]
-capabilities   = ["instructions", "skills", "mcp"]
-mcp_format     = "pi"
+capabilities   = ["instructions", "skills"]
 global_profile = "minimal"   # pi gets the lighter profile
 
 [agents.pi.paths.global]
 instructions = ["~/.pi/agent/AGENTS.md"]
 skills       = ["~/.pi/agent/skills"]
-mcp          = ["~/.pi/mcp.json"]
 
 [agents.pi.paths.project]
 skills = [".pi/skills"]
-mcp    = [".pi/mcp.json"]
 
 [agents.pi.vars]
 agent_name = "Pi"

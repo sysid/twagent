@@ -7,8 +7,7 @@ The canonical config lives at `~/.config/twagent/config.toml`. Edit it with
 
 | Section | Purpose |
 |---|---|
-| `schema_version` | Required. Currently `3`. |
-| `env_file` | Optional. Path (relative to the config) to a dotenv file used for `${VAR}` interpolation. |
+| `schema_version` | Required. Currently `4`. |
 | `[common.vars]` | Jinja vars shared across agents (overlaid by per-agent vars). |
 | `[agents.<id>]` | An agent: capabilities, MCP format, paths, vars, default global profile. |
 | `[instructions.<name>]` | Jinja2 instruction template (first-class artifact in v3). |
@@ -28,7 +27,7 @@ refuses to load otherwise.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `capabilities` | list of strings | yes | Subset of `instructions`, `skills`, `subagents`, `prompts`, `mcp`. |
-| `mcp_format` | string | iff `mcp` in capabilities | One of: `claude-code`, `copilot-cli`, `pi`, `codex`, `vscode`, `opencode`. |
+| `mcp_format` | string | iff `mcp` in capabilities | One of: `claude-code`, `copilot-cli`, `codex`, `vscode`, `opencode`. Pi needs an extension-specific format that has not been selected. |
 | `global_profile` | string | no | Profile name deployed by `apply --global`. |
 | `paths.global.<kind>` | list of paths | per capability | Canonical destinations. Always a list (1+ entries). |
 | `paths.project.<kind>` | list of paths | per capability | cwd-relative destinations for `apply --here`. `instructions` is optional here. |
@@ -61,10 +60,10 @@ Skills and subagents may be files or directories — twagent symlinks the
 | `type` | string | no | `stdio` (default) or `http`/`sse`. |
 | `command` | string | stdio only | Executable. |
 | `args` | list of strings | no | Args to `command`. |
-| `env` | dict | no | Env vars; `${VAR}` and `${VAR:-default}` are interpolated. |
+| `env` | dict | no | Env vars. Verified formats resolve `${VAR}` at agent runtime; `${VAR:-default}` is rejected. |
 | `url` | string | http/sse only | Endpoint URL. |
 | `tools` | list of strings | no | Whitelist (e.g. `["*"]`). |
-| `headers` | dict | http/sse only | Headers; same interpolation as `env`. Use a nested table. |
+| `headers` | dict | http/sse only | Headers. Verified formats resolve `${VAR}` at agent runtime; use a nested table. |
 
 Per-agent quirks (e.g. copilot-cli rewriting stdio → local in the compiled
 JSON) live in the `mcp_format` translator — you only write one canonical
@@ -76,7 +75,10 @@ infers transport from the fields present:
 | Canonical | Compiled for codex |
 |---|---|
 | `type` | *omitted* — codex infers stdio vs http from `command` vs `url` |
-| `headers` | `http_headers` |
+| Literal `headers` value | `http_headers` |
+| Header value exactly `${VAR}` | `env_http_headers.<header> = "VAR"` |
+| `Authorization = "Bearer ${VAR}"` | `bearer_token_env_var = "VAR"` |
+| Stdio `env.VAR = "${VAR}"` | `env_vars = ["VAR"]` |
 | `tools = ["*"]` | *omitted* — codex's `enabled_tools` is a literal tool-name allow-list with no wildcard syntax, so `["*"]` would mean a tool named `*`. Omitting is how codex spells "all tools". |
 | `tools` (any other list) | `enabled_tools` — a real allow-list is translated as written; dropping it would silently widen the server to all tools. |
 | `type = "sse"` | *server skipped, with a warning* — codex has no sse transport |
@@ -143,8 +145,7 @@ plugins = ["bmw-common"]   # all its skills + agents, fanned out to every agent
 ## A worked example
 
 ```toml
-schema_version = 3
-env_file = "secrets.env"
+schema_version = 4
 
 [common.vars]
 user_name  = "Tom"
@@ -280,16 +281,32 @@ instructions = ["AGENT-md"]
 `twagent apply --global` then writes the **same** template into each agent's
 instructions path with that agent's own `agent_name` and `extra_instructions`.
 
-## Interpolation & secrets
+## Runtime references & secrets
 
-- `${VAR}` and `${VAR:-default}` are resolved inside `servers.*.env` and
-  `servers.*.headers` only. (Not inside Jinja `{{ }}` — that's a different
-  layer.)
-- Sources: `os.environ` plus the dotenv pointed at by `env_file`. Env
-  always wins over dotenv on key clash.
-- Resolved variable values are **masked by default** in `apply -n`, `diff`, and
-  `info` output. Literal values are not recognized as secrets. Use
-  `-S` / `--show-secrets` to reveal.
+- `${VAR}` is supported inside `servers.*.env` and `servers.*.headers` only.
+  `twagent` never resolves it or reads the secret; the launched agent reads its
+  own environment.
+- Claude Code and Copilot preserve reference strings. Codex translates only
+  representations its schema can express: same-name stdio variables, exact
+  dynamic headers, and exact bearer authorization headers.
+- `${VAR:-default}` is rejected because the schema cannot reliably distinguish
+  credentials from operational values. Put non-secret defaults in the launch
+  environment or write a literal value.
+- VS Code and opencode reject runtime references until their expansion behavior
+  is verified. Literal MCP configurations remain supported.
+- `info` masks stale plaintext values at canonical reference-backed positions;
+  `info --show-secrets` is the explicit raw-file escape hatch.
+
+### Migrating from schema 3
+
+1. Set `schema_version = 4` and remove `env_file`.
+2. Remove Pi's `mcp` capability, `mcp_format`, and MCP paths unless you have
+   implemented a tested extension-specific format.
+3. Replace `${VAR:-default}` with `${VAR}` and provide the value when launching
+   the agent.
+4. Run `twagent apply --global`, verify outputs contain placeholders or Codex
+   environment-variable names rather than secret values, then rotate any token
+   previously persisted as plaintext if its confidentiality is uncertain.
 
 ## Profile composition rules
 
@@ -319,9 +336,10 @@ Common failure modes:
 
 | Error | Cause |
 |---|---|
-| `schema_version` missing / wrong | Add `schema_version = 3` at top level. |
+| `schema_version` missing / wrong | Add `schema_version = 4` at top level. |
+| `env_file was removed` | Export MCP variables in the environment that launches the agent. |
 | `[[scopes]] blocks are not supported` | Old v1/v2 format. Replace with per-agent `global_profile`. |
-| `templates_dir is not supported in schema_version=3` | Old format. Use `[instructions.<name>] source = …` instead. |
+| `templates_dir is not supported in schema_version >= 3` | Old format. Use `[instructions.<name>] source = …` instead. |
 | `name X shadows another artifact` | Two registries declared the same name. Names are globally unique. |
 | `mcp_format required when 'mcp' in capabilities` | Add `mcp_format = "claude-code"` (or another valid value) to the agent. |
 | `profiles.X: unknown key 'Y'` | A misspelled profile key (e.g. `pluings` for `plugins`). Profile keys are validated; the error suggests the nearest valid key. |

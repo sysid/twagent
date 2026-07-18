@@ -16,19 +16,18 @@ from __future__ import annotations
 
 import difflib
 import logging
-import os
 import tomllib
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, overload
 
-from twagent.interpolate import load_dotenv
+from twagent.interpolate import contains_variable_default
 from twagent.plugins import discover_plugin
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSION = 4
 
 CAPABILITIES: Final[tuple[str, ...]] = (
     "instructions",
@@ -50,7 +49,7 @@ EXPANSION_KINDS: Final[tuple[str, ...]] = (
 )
 Capability = Literal["instructions", "skills", "subagents", "prompts", "mcp"]
 
-MCP_FORMATS = ("claude-code", "copilot-cli", "pi", "vscode", "opencode", "codex")
+MCP_FORMATS = ("claude-code", "copilot-cli", "vscode", "opencode", "codex")
 
 # Capabilities whose paths.project entry MAY be omitted from per-agent config.
 PROJECT_OPTIONAL_CAPABILITIES: Final[tuple[str, ...]] = ("instructions",)
@@ -168,8 +167,6 @@ class Configuration:
     servers: dict[str, Server]
     profiles: dict[str, Profile]
     plugins: dict[str, Plugin] = field(default_factory=dict)
-    env_file: Path | None = None
-    env_vars: dict[str, str] = field(default_factory=dict)
 
     @overload
     def registry(self, kind: Literal["servers"]) -> dict[str, Server]: ...
@@ -235,21 +232,11 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
             f"({SUPPORTED_SCHEMA_VERSION}). Upgrade twagent."
         )
 
-    env_file = None
-    dotenv_vars: dict[str, str] = {}
     if "env_file" in raw:
-        env_file = (base_dir / raw["env_file"]).resolve()
-        logger.debug("config._build: loading env_file=%s", env_file)
-        # Hard error if declared but missing — matches spec edge case.
-        dotenv_vars = load_dotenv(env_file)
-        logger.debug(
-            "config._build: dotenv loaded %d keys from %s",
-            len(dotenv_vars),
-            env_file,
+        raise ConfigError(
+            "env_file was removed in schema version 4; export MCP variables "
+            "in the agent launch environment instead"
         )
-    # Process env always available; dotenv layered first, real env wins on clash
-    # (matches twmcp's interpolate semantics — see test_interpolate.py).
-    env_vars: dict[str, str] = {**dotenv_vars, **dict(os.environ)}
 
     common = _build_common(raw.get("common", {}))
     agents = _build_agents(raw.get("agents", {}))
@@ -285,8 +272,6 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
         servers=servers,
         profiles=profiles,
         plugins=plugins,
-        env_file=env_file,
-        env_vars=env_vars,
     )
     _validate(config)
     return config
@@ -295,7 +280,7 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
 def _build_common(raw: dict) -> Common:
     if "templates_dir" in raw:
         raise ConfigError(
-            "[common] templates_dir is not supported in schema_version=3. "
+            "[common] templates_dir is not supported in schema_version >= 3. "
             "Templates are now first-class artifacts: declare them with "
             "[instructions.<name>] source = '<absolute-or-~-prefixed-path>'."
         )
@@ -372,6 +357,13 @@ def _build_server(name: str, blob: dict) -> Server:
         raise ConfigError(f"servers.{name}: type=stdio requires 'command'")
     if server.type in ("http", "sse") and not server.url:
         raise ConfigError(f"servers.{name}: type={server.type} requires 'url'")
+    for field_name, values in (("env", server.env), ("headers", server.headers)):
+        for key, value in (values or {}).items():
+            if contains_variable_default(value):
+                raise ConfigError(
+                    f"servers.{name}.{field_name}.{key}: variable defaults are not "
+                    "supported; set the value in the agent launch environment"
+                )
     return server
 
 

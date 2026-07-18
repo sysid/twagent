@@ -100,8 +100,9 @@ the value comes from one config feeding many destinations.
 
 Out of the box: **claude-code**, **copilot-cli**, **pi**, **codex**,
 **vscode**, **opencode**. The list is extensible — an "agent" is just a TOML
-block naming paths, capabilities, and an `mcp_format` translator. Adding a new
-agent doesn't require code changes unless its MCP format is genuinely new.
+block naming paths and capabilities. MCP-capable agents also name an
+`mcp_format` translator. Pi currently supports instructions and skills only;
+its MCP behavior depends on an extension that has not been selected.
 
 **codex** is the standing example of "genuinely new": it is the only target
 whose MCP config is TOML (`~/.codex/config.toml`) rather than JSON, and it
@@ -109,6 +110,11 @@ names different keys, so it carries a dedicated builder in `mcp.py`. That file
 is also codex's own state file — it holds `[projects]` trust levels and `[tui]`
 settings — so twagent replaces only the `mcp_servers` table and leaves the rest
 untouched.
+
+Claude Code and Copilot resolve `${VAR}` references at runtime. Codex translates
+them into its native environment-backed fields. VS Code and opencode accept
+literal MCP values but reject runtime references until their behavior is
+verified.
 
 ## Two patterns at a glance
 

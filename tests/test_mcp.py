@@ -61,11 +61,14 @@ class TestGetFormat:
         assert {
             "claude-code",
             "copilot-cli",
-            "pi",
             "vscode",
             "opencode",
             "codex",
         } <= set(FORMAT_REGISTRY)
+
+    def test_pi_format_is_not_registered_without_a_selected_extension(self):
+        with pytest.raises(KeyError, match="Unknown mcp_format"):
+            get_format("pi")
 
 
 class TestTransformForFormat:
@@ -97,14 +100,6 @@ class TestTransformForFormat:
         assert result["mcpServers"]["local-proxy"]["type"] == "local"
         # http unchanged
         assert result["mcpServers"]["atlassian"]["type"] == "http"
-
-    def test_pi_top_level_key(self, simple_servers):
-        result = transform_for_format(simple_servers, get_format("pi"))
-        assert "mcpServers" in result
-
-    def test_pi_keeps_stdio_type(self, simple_servers):
-        result = transform_for_format(simple_servers, get_format("pi"))
-        assert result["mcpServers"]["github"]["type"] == "stdio"
 
     def test_vscode_top_level_key(self, simple_servers):
         result = transform_for_format(simple_servers, get_format("vscode"))
@@ -138,6 +133,46 @@ class TestTransformForFormat:
         servers = {"minimal": Server(name="minimal", type="stdio", command="test-cmd")}
         result = transform_for_format(servers, get_format("claude-code"))
         assert "env" not in result["mcpServers"]["minimal"]
+
+    @pytest.mark.parametrize("format_name", ["claude-code", "copilot-cli"])
+    def test_runtime_references_are_preserved_for_verified_json_formats(
+        self, format_name
+    ):
+        servers = {
+            "runtime": Server(
+                name="runtime",
+                type="http",
+                url="https://example.com/mcp",
+                headers={
+                    "Authorization": "Bearer ${API_TOKEN}",
+                    "X-Token": "${API_TOKEN}",
+                },
+            )
+        }
+
+        result = transform_for_format(servers, get_format(format_name))
+
+        assert result["mcpServers"]["runtime"]["headers"] == {
+            "Authorization": "Bearer ${API_TOKEN}",
+            "X-Token": "${API_TOKEN}",
+        }
+
+    @pytest.mark.parametrize("format_name", ["vscode", "opencode"])
+    def test_runtime_references_fail_for_unverified_formats(self, format_name):
+        servers = {
+            "runtime": Server(
+                name="runtime",
+                type="stdio",
+                command="server",
+                env={"API_TOKEN": "${API_TOKEN}"},
+            )
+        }
+
+        with pytest.raises(
+            ValueError,
+            match=rf"servers\.runtime\.env\.API_TOKEN.*{format_name}",
+        ):
+            transform_for_format(servers, get_format(format_name))
 
 
 class TestWriteConfig:
@@ -227,6 +262,88 @@ class TestCodexFormat:
         assert atlassian["url"] == "https://example.com/mcp/"
         assert atlassian["http_headers"]["X-Atlassian-Token"] == "test-token"
         assert "headers" not in atlassian
+
+    def test_codex_maps_runtime_stdio_environment(self):
+        servers = {
+            "runtime": Server(
+                name="runtime",
+                type="stdio",
+                command="server",
+                env={"API_TOKEN": "${API_TOKEN}", "LOG_LEVEL": "info"},
+            )
+        }
+
+        result = transform_for_format(servers, get_format("codex"))
+
+        runtime = result["mcp_servers"]["runtime"]
+        assert runtime["env_vars"] == ["API_TOKEN"]
+        assert runtime["env"] == {"LOG_LEVEL": "info"}
+
+    def test_codex_maps_runtime_http_headers(self):
+        servers = {
+            "runtime": Server(
+                name="runtime",
+                type="http",
+                url="https://example.com/mcp",
+                headers={
+                    "Authorization": "Bearer ${BEARER_TOKEN}",
+                    "X-Token": "${API_TOKEN}",
+                    "X-Region": "emea",
+                },
+            )
+        }
+
+        result = transform_for_format(servers, get_format("codex"))
+
+        runtime = result["mcp_servers"]["runtime"]
+        assert runtime["bearer_token_env_var"] == "BEARER_TOKEN"
+        assert runtime["env_http_headers"] == {"X-Token": "API_TOKEN"}
+        assert runtime["http_headers"] == {"X-Region": "emea"}
+
+    @pytest.mark.parametrize(
+        ("env", "headers", "field"),
+        [
+            ({"TOKEN": "${OTHER_TOKEN}"}, None, "env.TOKEN"),
+            (None, {"X-Token": "prefix-${TOKEN}"}, "headers.X-Token"),
+        ],
+    )
+    def test_codex_rejects_runtime_references_it_cannot_represent(
+        self, env, headers, field
+    ):
+        servers = {
+            "runtime": Server(
+                name="runtime",
+                type="stdio" if env else "http",
+                command="server" if env else None,
+                url=None if env else "https://example.com/mcp",
+                env=env,
+                headers=headers,
+            )
+        }
+
+        with pytest.raises(ValueError, match=rf"servers\.runtime\.{field}.*codex"):
+            transform_for_format(servers, get_format("codex"))
+
+    @pytest.mark.parametrize(
+        "server",
+        [
+            Server(
+                name="http-with-env",
+                type="http",
+                url="https://example.com/mcp",
+                env={"TOKEN": "${TOKEN}"},
+            ),
+            Server(
+                name="stdio-with-headers",
+                type="stdio",
+                command="server",
+                headers={"X-Token": "${TOKEN}"},
+            ),
+        ],
+    )
+    def test_codex_rejects_fields_for_the_wrong_transport(self, server):
+        with pytest.raises(ValueError, match=rf"servers\.{server.name}.*codex"):
+            transform_for_format({server.name: server}, get_format("codex"))
 
     def test_codex_omits_wildcard_tools(self, simple_servers):
         # Codex's `enabled_tools` is a literal allow-list of tool NAMES with no

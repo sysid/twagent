@@ -25,7 +25,7 @@ from twagent.deploy import (
     render_template,
 )
 from twagent.expansion import expand_profile
-from twagent.mcp import get_format, serialize
+from twagent.mcp import get_format, redact_legacy_runtime_values, serialize
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +47,10 @@ class DiffContext:
     agent: Agent
     expanded: ProfileExpansion
     report: DiffReport
-    show_secrets: bool = False
 
 
-def compute_diff(
-    config: Configuration,
-    show_secrets: bool = False,
-) -> DiffReport:
-    logger.debug(
-        "diff.compute_diff: agents=%d show_secrets=%s",
-        len(config.agents),
-        show_secrets,
-    )
+def compute_diff(config: Configuration) -> DiffReport:
+    logger.debug("diff.compute_diff: agents=%d", len(config.agents))
     report = DiffReport()
     for agent_id, agent in config.agents.items():
         if agent.global_profile is None:
@@ -70,7 +62,6 @@ def compute_diff(
             agent=agent,
             expanded=expanded,
             report=report,
-            show_secrets=show_secrets,
         )
         for cap in agent.capabilities:
             _diff_one(ctx, cap)
@@ -142,8 +133,7 @@ def _parse_current(text: str, serializer: str) -> dict:
     """Parse a deployed config into plain data. Raises ValueError if unparseable.
 
     Unlike write_config's parser this uses stdlib tomllib, not tomlkit: diff
-    never writes back, so it wants plain dicts — which is what keeps
-    _mask_like_intended operating on real dict/list containers.
+    never writes back, so it wants plain dicts for structural comparison.
     """
     if serializer == "toml":
         try:
@@ -160,15 +150,8 @@ def _parse_current(text: str, serializer: str) -> dict:
 
 def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
     config, agent, expanded, report = ctx.config, ctx.agent, ctx.expanded, ctx.report
-    show_secrets = ctx.show_secrets
     server_names = expanded.servers
-    intended_dict = compile_mcp_for_agent(
-        config,
-        agent,
-        server_names,
-        dry_run=not show_secrets,
-        show_secrets=show_secrets,
-    )
+    intended_dict = compile_mcp_for_agent(config, agent, server_names)
     # twagent owns ONLY this subtree; targets like ~/.claude.json and
     # ~/.codex/config.toml also hold harness state that must never register as
     # drift (mirrors write_config).
@@ -188,8 +171,12 @@ def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
                 )
                 continue
             current_dict: dict = {top_key: current_data.get(top_key, {})}
-            if not show_secrets:
-                _mask_like_intended(current_dict, intended_dict)
+            canonical = {
+                name: config.servers[name]
+                for name in server_names
+                if name in config.servers
+            }
+            redact_legacy_runtime_values(current_dict, canonical, profile)
             compare_current = serialize(current_dict, profile.serializer)
         else:
             compare_current = ""
@@ -205,28 +192,6 @@ def _diff_mcp(ctx: DiffContext, targets: list[Path]) -> None:
                 )
             )
             report.lines.append(diff)
-
-
-def _mask_like_intended(current: object, intended: object) -> None:
-    """Mask current-side values to '***' exactly where the intended side is masked.
-
-    The intended side masks only ${VAR}-derived values (deploy dry-run). Masking
-    the current side symmetrically means secret VALUES never drive drift, while
-    literal values (e.g. a URL header) still compare for real. A blanket
-    key-based mask would hide genuine edits to literal env/header values.
-    """
-    if isinstance(current, dict) and isinstance(intended, dict):
-        current_d = cast(dict[str, object], current)
-        intended_d = cast(dict[str, object], intended)
-        for key, value in current_d.items():
-            intended_value = intended_d.get(key)
-            if intended_value == "***" and isinstance(value, str):
-                current_d[key] = "***"
-            else:
-                _mask_like_intended(value, intended_value)
-    elif isinstance(current, list) and isinstance(intended, list):
-        for current_item, intended_item in zip(current, intended):
-            _mask_like_intended(current_item, intended_item)
 
 
 # ─── Dispatch table ─────────────────────────────────────────────────────

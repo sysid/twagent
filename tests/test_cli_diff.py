@@ -61,13 +61,32 @@ def test_divergence_exits_one(deployed_world):
 def test_diff_masks_secrets_by_default(deployed_world):
     result = runner.invoke(app, ["--config", str(deployed_world), "diff"])
     assert "real_secret_value" not in result.output
+    assert "${GITHUB_TOKEN}" in result.output
 
 
-def test_diff_show_secrets_reveals(deployed_world):
+def test_diff_rejects_removed_show_secrets_option(deployed_world):
     result = runner.invoke(
         app, ["--config", str(deployed_world), "diff", "--show-secrets"]
     )
-    assert "real_secret_value" in result.output
+    assert result.exit_code == 2
+    assert "No such option" in result.output
+
+
+def test_diff_masks_legacy_resolved_secret_but_shows_intended_reference(
+    deployed_world, tmp_path
+):
+    target = tmp_path / "claude" / ".claude.json"
+    target.write_text(
+        '{"mcpServers":{"gh":{"type":"stdio","command":"npx",'
+        '"env":{"GITHUB_TOKEN":"legacy_secret"}}}}'
+    )
+
+    result = runner.invoke(app, ["--config", str(deployed_world), "diff"])
+
+    assert result.exit_code == 1
+    assert "legacy_secret" not in result.output
+    assert "***" in result.output
+    assert "${GITHUB_TOKEN}" in result.output
 
 
 # ─── MCP subtree ownership + masking symmetry ────────────────────────────
