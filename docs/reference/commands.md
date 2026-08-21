@@ -82,7 +82,14 @@ to force local copies of globally-present artifacts.
 | Code | Meaning |
 |---|---|
 | 0 | Success (or `--dry-run` completed). |
+| 1 | Deploy-time failures, e.g. a registered `source` missing on disk. |
 | 2 | Invalid flags / unknown names / config errors. |
+
+Sources marked `optional = true` that are absent on this machine do **not**
+affect the exit code. They are summarised as `N optional source(s) absent`,
+counted per artifact rather than per agent — one absent skill wanted by four
+agents is one absent source. Run `twagent doctor` to list them, or `-v` to
+see which agent skipped what.
 
 ---
 

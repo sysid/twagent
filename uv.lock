@@ -698,7 +698,7 @@ wheels = [
 
 [[package]]
 name = "twagent"
-version = "2.2.1"
+version = "2.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },

@@ -116,7 +116,7 @@ them into its native environment-backed fields. VS Code and opencode accept
 literal MCP values but reject runtime references until their behavior is
 verified.
 
-## Two patterns at a glance
+## Three patterns at a glance
 
 **Pattern 1 — keep one machine in sync.** Edit the canonical TOML; run
 `twagent apply --global`; every agent on this machine now has the same
@@ -127,6 +127,14 @@ what's drifted between config and disk.
 -s project-foo -a claude-code` drops Claude-specific skills + an MCP server
 into the repo as `.claude/skills/...` + `.mcp.json`. Commit it or `.gitignore`
 it — twagent doesn't care.
+
+**Pattern 3 — one config, many machines.** Sync the TOML as a dotfile. Where
+a source lives in a repo a given machine doesn't check out — a work-only
+plugin on your personal laptop — mark it `optional = true`. That machine
+skips it silently and still exits 0; `twagent doctor` lists it as *expected
+absent on this machine*. Leave the flag off everywhere else, so a genuine
+typo still fails loudly. See
+[Sharing one config across machines](reference/config.md#sharing-one-config-across-machines).
 
 ## Next
 

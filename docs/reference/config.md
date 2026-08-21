@@ -122,8 +122,10 @@ At load, twagent reads `plugin.json`, walks the manifest-declared dirs, and
 | `"prompts"` | `prompts` | `*.md` file | filename |
 | `mcpServers` (in `plugin.json`) and/or a `.mcp.json` file | `servers` | server entry | server key |
 
-There is no `instructions` mapping — CC plugins don't ship that kind; if one
-is present it is ignored with a warning.
+There is no `instructions` mapping — CC plugins don't ship that kind.
+twagent reads exactly five manifest keys: `description`, `skills`, `agents`,
+`prompts`, `mcpServers`. Every other key in `plugin.json` — `instructions`
+included — is ignored silently, with no warning.
 
 **Reference a plugin** atomically from a profile (`plugins = ["bmw-common"]`)
 or ad-hoc (`twagent apply --select bmw-common`). The bundle expands into its
