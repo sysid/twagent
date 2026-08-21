@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from simple_term_menu import TerminalMenu
 
-from twagent.config import EXPANSION_KINDS, ProfileExpansion
+from twagent.config import EXPANSION_KINDS, FileArtifact, ProfileExpansion
 from twagent.expansion import expand_profile
 
 if TYPE_CHECKING:
@@ -118,12 +118,32 @@ def resolve_selection(names: list[str], config: "Configuration") -> ProfileExpan
                         buckets[kind].append(m)
         elif name in config.plugins:
             plugin = config.plugins[name]
+            if not plugin.available:
+                # Selected by name, so silence would be wrong even when the
+                # entry is marked optional — the user asked for this thing.
+                logger.warning(
+                    "--select %s: plugin source not on this machine (%s); "
+                    "it contributes nothing",
+                    name,
+                    plugin.source,
+                )
             for kind in buckets:
                 for m in getattr(plugin, kind, []):
                     if m not in buckets[kind]:
                         buckets[kind].append(m)
         elif name in artifact_kind_of:
             kind = artifact_kind_of[name]
+            art = config.registry(kind)[name]
+            if (
+                isinstance(art, FileArtifact)
+                and art.optional
+                and not art.source.exists()
+            ):
+                logger.warning(
+                    "--select %s: source not on this machine (%s); it will be skipped",
+                    name,
+                    art.source,
+                )
             if name not in buckets[kind]:
                 buckets[kind].append(name)
         else:

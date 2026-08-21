@@ -93,7 +93,7 @@ live across every agent that supports it.
 |---|---|
 | `Config not found. Use --init to create.` | Run `twagent edit --init` first. |
 | `templates_dir is not supported in schema_version=3` | Old config format — delete the `templates_dir` line; declare templates as `[instructions.<name>]` instead. |
-| `source does not exist` warning at load | The path in a `[skills.X] source = ...` doesn't exist on disk. Either create the directory or remove the entry. |
+| `source does not exist` warning at load | The path in a `[skills.X] source = ...` doesn't exist on disk. Create the directory, remove the entry, or — if it's absent by design on this machine — set `optional = true`. |
 | `[[scopes]] blocks are not supported` | Same — old v1/v2 format. Use per-agent `global_profile` instead. |
 
 ## Next

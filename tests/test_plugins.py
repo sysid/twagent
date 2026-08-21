@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from twagent.plugins import PluginContents, discover_plugin
+from twagent.plugins import PluginContents, PluginSourceMissing, discover_plugin
 
 FIXTURES = Path(__file__).parent / "fixtures" / "plugins"
 
@@ -32,9 +32,17 @@ def test_discover_plugin_reads_all_kinds_from_manifest():
     assert contents.servers["alpha-server"]["command"] == "echo"
 
 
-def test_discover_plugin_missing_manifest_raises():
-    with pytest.raises(FileNotFoundError):
+def test_discover_plugin_absent_source_dir_raises_source_missing():
+    """Absent dir is its own error: config degrades it instead of failing."""
+    with pytest.raises(PluginSourceMissing):
         discover_plugin("nope", FIXTURES / "does-not-exist")
+
+
+def test_discover_plugin_missing_manifest_raises(tmp_path):
+    """Dir present but no plugin.json — broken, NOT PluginSourceMissing."""
+    with pytest.raises(FileNotFoundError) as exc:
+        discover_plugin("nope", tmp_path)
+    assert not isinstance(exc.value, PluginSourceMissing)
 
 
 def test_discover_plugin_declared_dir_absent_raises(tmp_path):

@@ -387,7 +387,17 @@ def apply(
         f"[green]Applied[/green] ({mode}): {n_written} {label}, "
         f"{len(result.warnings)} warning(s), {len(result.errors)} error(s)."
     )
-    if n_written == 0 and not result.warnings and not result.errors:
+    if result.skipped_optional:
+        summary += (
+            f" {len(result.skipped_optional)} optional source(s) absent "
+            f"— run `twagent doctor` to list them."
+        )
+    if (
+        n_written == 0
+        and not result.warnings
+        and not result.errors
+        and not result.skipped_optional
+    ):
         summary = (
             f"[yellow]No-op[/yellow] ({mode}): nothing to deploy. "
             f"Check `twagent agents` for paths.project.* coverage, "

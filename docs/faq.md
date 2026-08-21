@@ -40,6 +40,22 @@ recommended package manager. `fzf` is optional but improves the
 Yes — twagent runs locally. The config file (`~/.config/twagent/config.toml`)
 is portable across machines; sync it however you sync dotfiles.
 
+### Some of my skills only exist on my work machine
+
+Mark them `optional = true`:
+
+```toml
+[skills.jira-creator]
+source   = "~/dev/acme/ai/skills/jira-creator"
+optional = true
+```
+
+Where the source exists, nothing changes. Where it doesn't, the entry is
+silently skipped — `apply` still exits 0 — and `twagent doctor` lists it as
+*expected absent on this machine*. Plugins take the same flag. Leave it off
+everywhere else so a genuine typo still fails loudly. See
+[Sharing one config across machines](reference/config.md#sharing-one-config-across-machines).
+
 ## Configuration
 
 ### Where is the canonical config?

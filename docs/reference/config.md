@@ -49,6 +49,7 @@ instructions = [
 |---|---|---|---|
 | `source` | path | yes | Absolute or `~`-prefixed. Missing source → warning at load, error at deploy / `doctor`. |
 | `description` | string | no | Free text, shown in `twagent artefacts`. |
+| `optional` | bool | no | Default `false`. Declares the source as *expected to be absent on some machines*. A missing optional source is silent at load, skipped at deploy (exit stays 0), and listed by `doctor` as expected-absent. See [Sharing one config across machines](#sharing-one-config-across-machines). |
 
 Skills and subagents may be files or directories — twagent symlinks the
 `source` as-is.
@@ -106,8 +107,9 @@ Claude's native `/plugin` manager.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `source` | path | yes | Absolute or `~`-prefixed dir holding `plugin.json`. Missing dir / unparseable manifest → hard error at load. twagent points at the dir; it never fetches or copies. You update plugins yourself (`git pull`). |
+| `source` | path | yes | Absolute or `~`-prefixed dir holding `plugin.json`. **Missing dir** → warning at load (silent when `optional`); the plugin name stays registered but contributes nothing. **Dir present but `plugin.json` missing or unparseable** → hard error at load, on every machine — that's a broken plugin, not a machine difference. twagent points at the dir; it never fetches or copies. You update plugins yourself (`git pull`). |
 | `description` | string | no | Defaults to the manifest's `description`. |
+| `optional` | bool | no | Default `false`. Same meaning as for file artifacts. |
 
 At load, twagent reads `plugin.json`, walks the manifest-declared dirs, and
 **injects each piece into the matching registry** as an ordinary artifact
@@ -328,6 +330,34 @@ profile "tw"        extends = ["base"]
 Composition is **per kind**. A skill and a server with the same name would
 collide via the shadow rule at load time, not via `extends`.
 
+## Sharing one config across machines
+
+The canonical TOML is meant to be synced as a dotfile, but not every machine
+checks out every repo — a work laptop may have `~/dev/acme/…` while a personal
+one legitimately does not.
+
+Mark those entries `optional = true`:
+
+```toml
+[skills.jira-creator]
+source   = "~/dev/acme/ai/skills/jira-creator"
+optional = true
+
+[plugins.acme-security]
+source   = "~/dev/acme/ai/plugins/acme-security"
+optional = true
+```
+
+On a machine where the source is present, nothing changes. Where it is absent:
+
+- **load** succeeds silently — every command keeps working;
+- **`apply`** skips the artifact and still exits 0, and reaps any stale symlink
+  left behind by a sync from the machine that did have it;
+- **`doctor`** lists it as *expected absent on this machine* (info, exit 0);
+- **`--select <name>`** still warns — you asked for that thing by name.
+
+Leave `optional` off for everything else, so a typo'd path stays loud.
+
 ## Validation
 
 Loaded by `twagent` (any command). On load failure, exit 2 with a message.
@@ -343,4 +373,6 @@ Common failure modes:
 | `name X shadows another artifact` | Two registries declared the same name. Names are globally unique. |
 | `mcp_format required when 'mcp' in capabilities` | Add `mcp_format = "claude-code"` (or another valid value) to the agent. |
 | `profiles.X: unknown key 'Y'` | A misspelled profile key (e.g. `pluings` for `plugins`). Profile keys are validated; the error suggests the nearest valid key. |
-| Source path missing (warning) | The path in a `source = …` doesn't exist on disk. |
+| Source path missing (warning) | The path in a `source = …` doesn't exist on disk. Add `optional = true` if it is absent by design on this machine. |
+| `skills.X: unknown key 'optinal'` | Artifact and plugin tables accept only `source`, `description`, `optional`. The error suggests the nearest valid key. |
+| `skills.X: missing required key 'source'` | Every artifact and plugin table needs a `source`. |

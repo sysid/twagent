@@ -26,6 +26,7 @@ def check(config: Configuration) -> DoctorReport:
     logger.debug("doctor.check: starting")
     report = DoctorReport()
     _check_artifact_sources(config, report)
+    _check_plugin_sources(config, report)
     _check_dangling_symlinks(config, report)
     _check_capability_mismatches(config, report)
     _check_agents_without_global_profile(config, report)
@@ -46,10 +47,38 @@ def _check_artifact_sources(config: Configuration, report: DoctorReport) -> None
         ("prompts", config.prompts),
     ):
         for name, art in registry.items():
-            if not art.source.exists():
+            if art.source.exists():
+                continue
+            if art.optional:
+                report.info.append(
+                    f"{kind}.{name}: expected absent on this machine "
+                    f"(optional): {art.source}"
+                )
+            else:
                 report.errors.append(
                     f"{kind}.{name}: source does not exist: {art.source}"
                 )
+
+
+def _check_plugin_sources(config: Configuration, report: DoctorReport) -> None:
+    """Plugins whose source dir isn't on this machine.
+
+    `_build_plugins` degrades these to placeholders so the config still
+    loads; doctor is where they surface.
+    """
+    logger.debug("doctor._check_plugin_sources")
+    for name, plugin in config.plugins.items():
+        if plugin.available:
+            continue
+        if plugin.optional:
+            report.info.append(
+                f"plugins.{name}: expected absent on this machine "
+                f"(optional): {plugin.source}"
+            )
+        else:
+            report.errors.append(
+                f"plugins.{name}: source dir does not exist: {plugin.source}"
+            )
 
 
 def _check_dangling_symlinks(config: Configuration, report: DoctorReport) -> None:

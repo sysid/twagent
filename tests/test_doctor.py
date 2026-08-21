@@ -1,5 +1,6 @@
 """US3: doctor reports introduced failures + clean state passes (v2)."""
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -106,3 +107,46 @@ subagents = ["reviewer"]
         config = load(config_path)
     report = check(config)
     assert any("subagents" in i and "lacks" in i for i in report.info)
+
+
+# ─── portability: doctor is where per-machine gaps surface ──────────────
+
+
+def _portable_config(tmp_path, *, optional: bool):
+    flag = "\noptional = true" if optional else ""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""\
+schema_version = 3
+[skills.workonly]
+source = "{tmp_path / "nope"}"{flag}
+[plugins.ghost]
+source = "{tmp_path / "no-plugin"}"{flag}
+[profiles.p]
+skills = ["workonly"]
+plugins = ["ghost"]
+"""
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return load(config_path)
+
+
+def test_optional_absent_sources_are_info_not_errors(tmp_path):
+    report = check(_portable_config(tmp_path, optional=True))
+    assert not report.has_errors
+    assert any("skills.workonly" in i and "expected absent" in i for i in report.info)
+    assert any("plugins.ghost" in i and "expected absent" in i for i in report.info)
+
+
+def test_non_optional_absent_sources_are_errors(tmp_path):
+    report = check(_portable_config(tmp_path, optional=False))
+    assert report.has_errors
+    assert any("skills.workonly" in e for e in report.errors)
+    assert any("plugins.ghost" in e for e in report.errors)
+
+
+def test_doctor_loads_despite_absent_plugin_dir(tmp_path):
+    """Regression: an absent plugin dir used to make doctor itself unusable."""
+    report = check(_portable_config(tmp_path, optional=True))
+    assert report.info  # it ran at all

@@ -20,6 +20,16 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+class PluginSourceMissing(FileNotFoundError):
+    """The plugin's source directory is not present on this machine.
+
+    Distinct from a present-but-broken plugin: an absent directory is the
+    expected case when one canonical config is shared across machines that
+    don't all check out the same repos. config.py degrades these to a
+    placeholder instead of failing the whole load.
+    """
+
+
 @dataclass(frozen=True)
 class PluginContents:
     """Pieces discovered in one plugin, keyed by on-disk basename.
@@ -41,10 +51,14 @@ class PluginContents:
 def discover_plugin(name: str, source: Path) -> PluginContents:
     """Parse `<source>/plugin.json` and discover all declared pieces.
 
-    Raises FileNotFoundError if the source dir or plugin.json is missing,
-    ValueError if the manifest is malformed or declares a non-existent dir.
+    Raises PluginSourceMissing if the source dir itself is absent (the
+    machine simply doesn't have it), plain FileNotFoundError if the dir is
+    there but holds no plugin.json, and ValueError if the manifest is
+    malformed or declares a non-existent dir.
     """
     logger.debug("plugins.discover_plugin: name=%s source=%s", name, source)
+    if not source.is_dir():
+        raise PluginSourceMissing(f"plugin {name!r}: source dir not found: {source}")
     manifest_path = source / "plugin.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"plugin {name!r}: no plugin.json at {manifest_path}")

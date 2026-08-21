@@ -4,6 +4,8 @@ Schema v2: scopes are gone. Global deployment is per-agent `global_profile`.
 Polymorphic --select forces a name-shadow validation rule across registries.
 """
 
+import warnings
+
 import pytest
 
 from twagent.config import (
@@ -12,6 +14,7 @@ from twagent.config import (
     ConfigError,
     load,
 )
+from twagent.expansion import expand_profile
 
 # ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -565,14 +568,118 @@ source = "{FIXTURE_PLUGINS / "beta"}"
         _write_config(tmp_path, body)
 
 
-def test_plugin_missing_source_dir_is_hard_error(tmp_path):
+def test_plugin_missing_source_dir_warns_and_degrades(tmp_path):
+    """One config, many machines: an absent plugin dir must not brick load."""
     body = f"""\
 schema_version = 3
 
 [plugins.ghost]
 source = "{tmp_path / "nonexistent"}"
 """
-    with pytest.raises(ConfigError, match="ghost"):
+    with pytest.warns(UserWarning, match="ghost"):
+        config = _write_config(tmp_path, body)
+    assert config.plugins["ghost"].available is False
+    assert config.plugins["ghost"].optional is False
+    assert config.plugins["ghost"].skills == []
+
+
+def test_plugin_missing_source_dir_optional_is_silent(tmp_path):
+    body = f"""\
+schema_version = 3
+
+[plugins.ghost]
+source = "{tmp_path / "nonexistent"}"
+optional = true
+"""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = _write_config(tmp_path, body)
+    assert config.plugins["ghost"].available is False
+    assert config.plugins["ghost"].optional is True
+
+
+def test_plugin_dir_present_but_no_manifest_is_still_hard_error(tmp_path):
+    """A broken plugin is a real defect, not a machine difference."""
+    (tmp_path / "broken").mkdir()
+    body = f"""\
+schema_version = 3
+
+[plugins.broken]
+source = "{tmp_path / "broken"}"
+"""
+    with pytest.raises(ConfigError, match="broken"):
+        _write_config(tmp_path, body)
+
+
+def test_plugin_dir_present_but_malformed_manifest_is_hard_error(tmp_path):
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "plugin.json").write_text("{not json")
+    body = f"""\
+schema_version = 3
+
+[plugins.broken]
+source = "{tmp_path / "broken"}"
+"""
+    with pytest.raises(ConfigError, match="cannot parse"):
+        _write_config(tmp_path, body)
+
+
+def test_profile_referencing_degraded_plugin_still_validates(tmp_path):
+    """Name stays registered, so profile refs and expansion keep working."""
+    body = f"""\
+schema_version = 3
+
+[plugins.ghost]
+source = "{tmp_path / "nonexistent"}"
+optional = true
+
+[profiles.p]
+plugins = ["ghost"]
+"""
+    config = _write_config(tmp_path, body)
+    expanded = expand_profile(config, "p")
+    assert expanded.skills == []
+    assert expanded.servers == []
+
+
+def test_optional_artifact_missing_source_does_not_warn(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[skills.s]
+source = "/nonexistent/path"
+optional = true
+"""
+    )
+    body = body.replace("[profiles.empty]\n", '[profiles.empty]\nskills = ["s"]\n')
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = _write_config(tmp_path, body)
+    assert config.skills["s"].optional is True
+
+
+def test_artifact_unknown_key_is_rejected_with_suggestion(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[skills.s]
+source = "/nonexistent/path"
+optinal = true
+"""
+    )
+    with pytest.raises(ConfigError, match="optinal.*did you mean 'optional'"):
+        _write_config(tmp_path, body)
+
+
+def test_artifact_missing_source_key_is_config_error(tmp_path):
+    body = (
+        MINIMAL_OK
+        + """
+[skills.s]
+description = "no source"
+"""
+    )
+    with pytest.raises(ConfigError, match="skills.s: missing required key 'source'"):
         _write_config(tmp_path, body)
 
 

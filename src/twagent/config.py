@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Final, Literal, overload
 
 from twagent.interpolate import contains_variable_default
-from twagent.plugins import discover_plugin
+from twagent.plugins import PluginSourceMissing, discover_plugin
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,9 @@ class FileArtifact:
     name: str
     source: Path
     description: str | None = None
+    #: Declared absent on some machines. A missing source is then a silent
+    #: skip at deploy rather than an error (one config, many machines).
+    optional: bool = False
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,12 @@ class Plugin:
     subagents: list[str] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
     servers: list[str] = field(default_factory=list)
+    #: See FileArtifact.optional.
+    optional: bool = False
+    #: False when the source dir is absent on this machine. The name stays
+    #: registered (profile refs and --select must still resolve) but the
+    #: member lists are empty, so it contributes nothing to any expansion.
+    available: bool = True
 
 
 @dataclass(frozen=True)
@@ -240,10 +249,10 @@ def _build(raw: dict, base_dir: Path) -> Configuration:
 
     common = _build_common(raw.get("common", {}))
     agents = _build_agents(raw.get("agents", {}))
-    instructions = _build_artifacts(raw.get("instructions", {}))
-    skills = _build_artifacts(raw.get("skills", {}))
-    subagents = _build_artifacts(raw.get("subagents", {}))
-    prompts = _build_artifacts(raw.get("prompts", {}))
+    instructions = _build_artifacts("instructions", raw.get("instructions", {}))
+    skills = _build_artifacts("skills", raw.get("skills", {}))
+    subagents = _build_artifacts("subagents", raw.get("subagents", {}))
+    prompts = _build_artifacts("prompts", raw.get("prompts", {}))
     servers = _build_servers(raw.get("servers", {}))
     profiles = _build_profiles(raw.get("profiles", {}))
     plugins = _build_plugins(
@@ -326,15 +335,25 @@ def _build_paths_section(raw: dict) -> dict[str, list[Path]]:
     return {cap: [Path(p).expanduser() for p in paths] for cap, paths in raw.items()}
 
 
-def _build_artifacts(raw: dict) -> dict[str, FileArtifact]:
+def _build_artifacts(kind: str, raw: dict) -> dict[str, FileArtifact]:
+    for name, blob in raw.items():
+        _check_unknown_keys(f"{kind}.{name}", blob, _ARTIFACT_KEYS)
     return {
         name: FileArtifact(
             name=name,
-            source=Path(blob["source"]).expanduser(),
+            source=_require_source(f"{kind}.{name}", blob),
             description=blob.get("description"),
+            optional=bool(blob.get("optional", False)),
         )
         for name, blob in raw.items()
     }
+
+
+def _require_source(where: str, blob: dict) -> Path:
+    """Read the mandatory `source` key as a ConfigError, not a bare KeyError."""
+    if "source" not in blob:
+        raise ConfigError(f"{where}: missing required key 'source'")
+    return Path(blob["source"]).expanduser()
 
 
 def _build_server(name: str, blob: dict) -> Server:
@@ -374,6 +393,10 @@ def _build_servers(raw: dict) -> dict[str, Server]:
 # Keys a [profiles.<name>] block may contain. A misspelled key (e.g.
 # `pluings`) was previously dropped silently — turning a typo into a silent
 # no-op. Reject unknown keys so the failure is loud, per fail-fast.
+_ARTIFACT_KEYS: Final[frozenset[str]] = frozenset({"source", "description", "optional"})
+
+_PLUGIN_KEYS: Final[frozenset[str]] = frozenset({"source", "description", "optional"})
+
 _PROFILE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "description",
@@ -446,9 +469,33 @@ def _build_plugins(
     out: dict[str, Plugin] = {}
     for plugin_name in sorted(raw):
         blob = raw[plugin_name]
-        source = Path(blob["source"]).expanduser()
+        _check_unknown_keys(f"plugins.{plugin_name}", blob, _PLUGIN_KEYS)
+        source = _require_source(f"plugins.{plugin_name}", blob)
+        optional = bool(blob.get("optional", False))
         try:
             contents = discover_plugin(plugin_name, source)
+        except PluginSourceMissing as exc:
+            # The dir simply isn't on this machine. Register a placeholder so
+            # profile refs and --select still resolve, but inject nothing.
+            # A present-but-broken plugin still falls through to the hard
+            # error below — that's a real defect, not a machine difference.
+            out[plugin_name] = Plugin(
+                name=plugin_name,
+                source=source,
+                description=blob.get("description"),
+                optional=optional,
+                available=False,
+            )
+            if optional:
+                logger.debug(
+                    "config._build_plugins: %s optional and absent, skipped",
+                    plugin_name,
+                )
+            else:
+                warnings.warn(
+                    f"plugins.{plugin_name}: {exc}", UserWarning, stacklevel=3
+                )
+            continue
         except (FileNotFoundError, ValueError) as exc:
             raise ConfigError(f"plugins.{plugin_name}: {exc}")
 
@@ -468,6 +515,7 @@ def _build_plugins(
         out[plugin_name] = Plugin(
             name=plugin_name,
             source=source,
+            optional=optional,
             description=description,
             skills=skill_names,
             subagents=subagent_names,
@@ -662,7 +710,12 @@ def _validate_no_name_shadow(config: Configuration) -> None:
 
 
 def _check_artifact_sources(config: Configuration) -> None:
-    """Missing source = warning, not hard error (FR-005)."""
+    """Missing source = warning, not hard error (FR-005).
+
+    `optional = true` entries are exempt: they are declared absent on some
+    machines, so their absence is expected rather than a warning. `doctor`
+    reports them instead.
+    """
     logger.debug("config._check_artifact_sources: scanning registries")
     for registry, kind in (
         (config.instructions, "instructions"),
@@ -671,9 +724,17 @@ def _check_artifact_sources(config: Configuration) -> None:
         (config.prompts, "prompts"),
     ):
         for name, art in registry.items():
-            if not art.source.exists():
-                warnings.warn(
-                    f"{kind}.{name}: source does not exist: {art.source}",
-                    UserWarning,
-                    stacklevel=3,
+            if art.source.exists():
+                continue
+            if art.optional:
+                logger.debug(
+                    "config._check_artifact_sources: %s.%s optional and absent",
+                    kind,
+                    name,
                 )
+                continue
+            warnings.warn(
+                f"{kind}.{name}: source does not exist: {art.source}",
+                UserWarning,
+                stacklevel=3,
+            )

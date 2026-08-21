@@ -1,5 +1,7 @@
 """US5: selection across all four list-shaped artifact types + polymorphic --select."""
 
+import logging
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -336,3 +338,41 @@ class TestResolveSelectionPlugins:
         config = self._config_with_plugin()
         with pytest.raises(ValueError, match="Unknown name"):
             resolve_selection(["nope"], config)
+
+
+# ─── portability: naming an absent thing explicitly stays loud ───────────
+
+
+def _absent_config(tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""\
+schema_version = 3
+[skills.workonly]
+source = "{tmp_path / "nope"}"
+optional = true
+[plugins.ghost]
+source = "{tmp_path / "no-plugin"}"
+optional = true
+[profiles.p]
+"""
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return load(config_path)
+
+
+def test_select_absent_optional_skill_warns(tmp_path, caplog):
+    config = _absent_config(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        expanded = resolve_selection(["workonly"], config)
+    assert expanded.skills == ["workonly"]
+    assert "not on this machine" in caplog.text
+
+
+def test_select_degraded_plugin_warns(tmp_path, caplog):
+    config = _absent_config(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        expanded = resolve_selection(["ghost"], config)
+    assert expanded.skills == []
+    assert "not on this machine" in caplog.text

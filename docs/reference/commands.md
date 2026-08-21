@@ -202,6 +202,9 @@ Read-only. Reports problems:
 
 - **errors** (exit 1): dangling symlinks under agent dirs, registered
   artifacts whose `source` is missing, profile references that don't resolve.
+  Entries marked `optional = true` whose source is absent are reported
+  separately under `Info:` as *expected absent on this machine*, and do not
+  affect the exit code.
 - **info** (exit 0): silently-skipped profile entries (e.g. a subagent
   in a profile deployed to an agent without `subagents` capability).
 

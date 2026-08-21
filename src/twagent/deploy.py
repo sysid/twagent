@@ -62,6 +62,10 @@ class ApplyResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run_log: list[str] = field(default_factory=list)
+    #: Distinct artifact names declared `optional = true` whose source is
+    #: absent on this machine — one entry per artifact, however many agents
+    #: wanted it. Expected, so deliberately NOT part of `has_errors`.
+    skipped_optional: list[str] = field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
@@ -538,7 +542,31 @@ def _deploy_file_artifacts(
             if ctx.dry_run:
                 result.dry_run_log.append(f"dedup {label}")
             logger.debug("deploy.dedup: %s", label)
-    sources = {name: registry[name].source for name in members if name in registry}
+    sources: dict[str, Path] = {}
+    for name in members:
+        art = registry.get(name)
+        if art is None:
+            continue
+        if art.optional and not art.source.exists():
+            # Leave it out of `sources` entirely: link_artifacts reaps target
+            # symlinks it doesn't see, which also clears a stale link synced
+            # in from a machine where this artifact did exist.
+            #
+            # Recorded by artifact name, not per agent/capability slot: one
+            # absent skill wanted by four agents is one absent source, and
+            # that is the count the summary line reports. The slot detail
+            # stays in the debug log.
+            if name not in result.skipped_optional:
+                result.skipped_optional.append(name)
+            logger.debug(
+                "deploy.optional_absent: %s/%s/%s (%s)",
+                agent.id,
+                capability,
+                name,
+                art.source,
+            )
+            continue
+        sources[name] = art.source
     for target_dir in targets:
         link_result = link_artifacts(sources, target_dir, dry_run=ctx.dry_run)
         for name in link_result.created + link_result.relinked:
