@@ -213,11 +213,29 @@ Read-only. Reports problems:
   separately under `Info:` as *expected absent on this machine*, and do not
   affect the exit code.
 - **info** (exit 0): silently-skipped profile entries (e.g. a subagent
-  in a profile deployed to an agent without `subagents` capability).
+  in a profile deployed to an agent without `subagents` capability), plus the
+  two *curation* checks below.
 
 ```bash
 twagent doctor
 ```
+
+### Curation checks — registered ≠ deployed
+
+Registering an artifact is only half of making it available. These two checks
+close the other half; both are **info**, never errors.
+
+| Check | Says | Fix |
+|---|---|---|
+| Unreferenced artifact | `skills.foo: registered but named by no profile` | Add it to a profile, or drop the registry entry. |
+| Unreachable profile | `profile 'bar': not reachable from any agent's global_profile` | Extend it from a `global_profile`, or mark it `adhoc = true`. |
+
+Plugin members are exempt from the first check — a profile references them via
+`plugins = [...]`, never by their individual names.
+
+A profile that exists purely for `apply --select` (an MCP environment swap, a
+per-repo bundle) declares that with `adhoc = true`, which silences the second
+check for it and leaves genuine strandings visible.
 
 | Exit | Meaning |
 |---|---|

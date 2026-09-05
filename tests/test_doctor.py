@@ -150,3 +150,129 @@ def test_doctor_loads_despite_absent_plugin_dir(tmp_path):
     """Regression: an absent plugin dir used to make doctor itself unusable."""
     report = check(_portable_config(tmp_path, optional=True))
     assert report.info  # it ran at all
+# ─── Curation checks: registered ≠ deployed ─────────────────────────────
+#
+# A skill can be registered, sourced, and still never reach an agent — either
+# because no profile names it, or because the profile that names it is not in
+# any agent's `global_profile` closure. Both are silent today; these checks
+# make them visible.
+
+
+FIXTURE_PLUGINS = Path(__file__).parent / "fixtures" / "plugins"
+
+
+def _load(tmp_path, body: str):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(body)
+    return load(config_path)
+
+
+@pytest.fixture
+def two_skills_world(tmp_path):
+    """Two sourced skills and one agent; the caller supplies the profiles."""
+    for name in ("used", "stranded"):
+        src = tmp_path / "src" / name
+        src.mkdir(parents=True)
+        (src / "SKILL.md").write_text("ok")
+    skills_dir = tmp_path / "claude" / "skills"
+    skills_dir.mkdir(parents=True)
+
+    def build(profiles: str, global_profile: str = "p"):
+        return _load(
+            tmp_path,
+            f"""\
+schema_version = 3
+[agents.c]
+capabilities = ["skills"]
+global_profile = "{global_profile}"
+[agents.c.paths.global]
+skills = ["{skills_dir}"]
+[agents.c.paths.project]
+skills = [".skills"]
+[agents.c.vars]
+[skills.used]
+source = "{tmp_path / "src" / "used"}"
+[skills.stranded]
+source = "{tmp_path / "src" / "stranded"}"
+{profiles}
+""",
+        )
+
+    return build
+
+
+def test_skill_named_by_no_profile_is_reported(two_skills_world):
+    config = two_skills_world('[profiles.p]\nskills = ["used"]')
+    report = check(config)
+    assert any("skills.stranded" in i and "no profile" in i for i in report.info)
+    assert not any("skills.used" in i for i in report.info)
+
+
+def test_skill_named_only_by_an_adhoc_profile_is_not_reported(two_skills_world):
+    """`adhoc` marks a profile as --select-only; the skills in it are still curated."""
+    config = two_skills_world(
+        '[profiles.p]\nskills = ["used"]\n\n'
+        '[profiles.park]\nadhoc = true\nskills = ["stranded"]'
+    )
+    report = check(config)
+    assert not any("skills.stranded" in i and "no profile" in i for i in report.info)
+
+
+def test_unreachable_profile_is_reported(two_skills_world):
+    config = two_skills_world(
+        '[profiles.p]\nskills = ["used"]\n\n[profiles.orphan]\nskills = ["stranded"]'
+    )
+    report = check(config)
+    assert any("profile 'orphan'" in i and "global_profile" in i for i in report.info)
+
+
+def test_adhoc_profile_is_not_reported_as_unreachable(two_skills_world):
+    config = two_skills_world(
+        '[profiles.p]\nskills = ["used"]\n\n'
+        '[profiles.park]\nadhoc = true\nskills = ["stranded"]'
+    )
+    report = check(config)
+    assert not any("profile 'park'" in i for i in report.info)
+
+
+def test_profile_reached_through_extends_is_not_reported(two_skills_world):
+    config = two_skills_world(
+        '[profiles.p]\nextends = ["base"]\nskills = ["used"]\n\n'
+        '[profiles.base]\nskills = ["stranded"]'
+    )
+    report = check(config)
+    assert not any("profile 'base'" in i for i in report.info)
+    assert not any("skills.stranded" in i for i in report.info)
+
+
+def test_curation_findings_are_info_not_errors(two_skills_world):
+    config = two_skills_world('[profiles.p]\nskills = ["used"]')
+    report = check(config)
+    assert not report.has_errors
+
+
+def test_plugin_injected_skill_is_not_reported_as_unreferenced(tmp_path):
+    """Plugin members are referenced via `plugins = [...]`, never by skill name."""
+    out = tmp_path / "out"
+    out.mkdir()
+    config = _load(
+        tmp_path,
+        f"""\
+schema_version = 3
+[agents.c]
+capabilities = ["skills"]
+global_profile = "p"
+[agents.c.paths.global]
+skills = ["{out}"]
+[agents.c.paths.project]
+skills = [".skills"]
+[agents.c.vars]
+[plugins.alpha]
+source = "{FIXTURE_PLUGINS / "alpha"}"
+[profiles.p]
+plugins = ["alpha"]
+""",
+    )
+    assert config.skills, "fixture must inject at least one skill"
+    report = check(config)
+    assert not any("no profile" in i for i in report.info)

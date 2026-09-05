@@ -115,6 +115,11 @@ class Profile:
     prompts: list[str] = field(default_factory=list)
     servers: list[str] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
+    # Declares "this profile is meant for `apply --select`, not for any
+    # agent's global_profile". Purely an intent marker: it changes nothing at
+    # deploy time, and only silences `twagent doctor`'s unreachable-profile
+    # check so that genuine strandings stay visible.
+    adhoc: bool = False
 
 
 @dataclass(frozen=True)
@@ -400,6 +405,7 @@ _PLUGIN_KEYS: Final[frozenset[str]] = frozenset({"source", "description", "optio
 _PROFILE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "description",
+        "adhoc",
         "extends",
         "instructions",
         "skills",
@@ -423,12 +429,16 @@ def _check_unknown_keys(where: str, blob: dict, allowed: frozenset[str]) -> None
 
 
 def _build_profiles(raw: dict) -> dict[str, Profile]:
+    out: dict[str, Profile] = {}
     for name, blob in raw.items():
         _check_unknown_keys(f"profiles.{name}", blob, _PROFILE_KEYS)
-    return {
-        name: Profile(
+        adhoc = blob.get("adhoc", False)
+        if not isinstance(adhoc, bool):
+            raise ConfigError(f"profiles.{name}: adhoc must be a boolean")
+        out[name] = Profile(
             name=name,
             description=blob.get("description"),
+            adhoc=adhoc,
             extends=list(blob.get("extends", [])),
             instructions=list(blob.get("instructions", [])),
             skills=list(blob.get("skills", [])),
@@ -437,8 +447,7 @@ def _build_profiles(raw: dict) -> dict[str, Profile]:
             servers=list(blob.get("servers", [])),
             plugins=list(blob.get("plugins", [])),
         )
-        for name, blob in raw.items()
-    }
+    return out
 
 
 def _build_plugins(

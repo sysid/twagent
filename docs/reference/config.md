@@ -89,6 +89,7 @@ infers transport from the fields present:
 | Field | Type | Notes |
 |---|---|---|
 | `description` | string | Free text. |
+| `adhoc` | bool (default `false`) | Intent marker: "this profile is for `apply --select`, not for any agent's `global_profile`". Changes nothing at deploy time; it only silences `doctor`'s unreachable-profile check. |
 | `extends` | list of profile names | Composed depth-first, parent-first. First-occurrence wins on collisions. Per-kind, not cross-kind. |
 | `instructions` | list of names | Artifact references. |
 | `skills` | list of names | Artifact references. |

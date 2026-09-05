@@ -779,6 +779,7 @@ source = "{FIXTURE_PLUGINS / "alpha" / "skills" / "greet"}"
 
 [profiles.p]
 description = "every valid key"
+adhoc = true
 extends = ["base"]
 skills = ["s1"]
 subagents = []
@@ -788,3 +789,23 @@ plugins = []
 """
     config = _write_config(tmp_path, body)  # must not raise
     assert config.profiles["p"].skills == ["s1"]
+
+
+# ─── adhoc marker ───────────────────────────────────────────────────────
+
+
+def test_adhoc_profile_is_flagged(tmp_path):
+    body = MINIMAL_OK.replace("[profiles.empty]", "[profiles.empty]\nadhoc = true")
+    config = _write_config(tmp_path, body)
+    assert config.profiles["empty"].adhoc is True
+
+
+def test_profile_adhoc_defaults_to_false(tmp_path):
+    config = _write_config(tmp_path, MINIMAL_OK)
+    assert config.profiles["empty"].adhoc is False
+
+
+def test_adhoc_must_be_boolean(tmp_path):
+    body = MINIMAL_OK.replace("[profiles.empty]", '[profiles.empty]\nadhoc = "yes"')
+    with pytest.raises(ConfigError, match="adhoc must be a boolean"):
+        _write_config(tmp_path, body)
