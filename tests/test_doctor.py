@@ -150,6 +150,8 @@ def test_doctor_loads_despite_absent_plugin_dir(tmp_path):
     """Regression: an absent plugin dir used to make doctor itself unusable."""
     report = check(_portable_config(tmp_path, optional=True))
     assert report.info  # it ran at all
+
+
 # ─── Curation checks: registered ≠ deployed ─────────────────────────────
 #
 # A skill can be registered, sourced, and still never reach an agent — either

@@ -60,8 +60,10 @@ uninstall:  ## uv uninstall
 build: clean format  ## format and build
 	uv build
 
+# Depends on `build` so a standalone `make publish` can never upload a stale
+# dist/ -- `build` cleans first, so what is uploaded is always what was just built.
 .PHONY: publish
-publish:  ## publish to PyPI
+publish: build  ## build and publish to PyPI
 	uv run twine upload --verbose dist/*
 
 .PHONY: bump-major
