@@ -97,7 +97,9 @@ skills = ["~/skills"]
 skills = [".skills"]
 [agents.c.vars]
 [subagents.reviewer]
-source = "/tmp/x"
+# Absent on purpose — `pytest.warns` below needs the missing-source
+# warning. A real /tmp path would make this test environment-dependent.
+source = "/nonexistent/twagent/x"
 [profiles.p]
 subagents = ["reviewer"]
 """

@@ -54,6 +54,19 @@ instructions = [
 Skills and subagents may be files or directories — twagent symlinks the
 `source` as-is.
 
+**The `<name>` is the deployed symlink name, verbatim** — twagent adds no
+extension. A skill is a directory, so `[skills.tw-review]` deploys as
+`skills/tw-review`. A subagent or prompt is a file, so the name must carry the
+extension its agent globs for or nothing discovers it: `[prompts."adr.md"]`
+deploys as `commands/adr.md`, whereas `[prompts.adr]` deploys as `commands/adr`
+and Claude Code ignores it. Quote the name — TOML reads an unquoted dot as a
+table separator. Plugin-injected artifacts are keyed by their on-disk filename
+and so are never affected.
+
+> Authoring note: prefer a skill. See
+> [ADR 0001](../adr/0001-promote-prompts-to-skills.md) for why prompts are not
+> a kind we author into.
+
 ### Server — `[servers.<name>]`
 
 | Field | Type | Required | Notes |

@@ -85,25 +85,30 @@ agent_name = "Codex"
 extra_instructions = []
 
 # ─── Instructions registry ─────────────────────────────────────────────
+# Every `source` below points at /nonexistent/twagent-test/* on purpose: this
+# fixture is loaded under `pytest.warns(UserWarning)`, which needs the sources
+# MISSING. /tmp/* would be wrong — anything on the machine can occupy it.
 [instructions.AGENT-md]
-source = "/tmp/twagent-test/templates/AGENT.md.j2"
+source = "/nonexistent/twagent-test/templates/AGENT.md.j2"
 
 # ─── Artifact registry ──────────────────────────────────────────────────
 [skills.bkmr-memory]
-source      = "/tmp/twagent-test/skills/bkmr-memory"
+source      = "/nonexistent/twagent-test/skills/bkmr-memory"
 description = "Persistent memory via bkmr CLI"
 
 [skills.tw-review]
-source = "/tmp/twagent-test/skills/tw-review"
+source = "/nonexistent/twagent-test/skills/tw-review"
 # Lives in a repo that only some machines check out: absent is expected, so
 # it is skipped silently at deploy and listed by `doctor`, not an error.
 optional = true
 
-[subagents.code-reviewer]
-source = "/tmp/twagent-test/agents/code-reviewer.md"
+# The artifact name is the deployed symlink name verbatim — for file-shaped
+# kinds it must carry the extension the agent globs for, or nothing finds it.
+[subagents."code-reviewer.md"]
+source = "/nonexistent/twagent-test/agents/code-reviewer.md"
 
-[prompts.adr]
-source = "/tmp/twagent-test/prompts/adr.prompt.md"
+[prompts."adr.md"]
+source = "/nonexistent/twagent-test/prompts/adr.md"
 
 # ─── MCP servers ────────────────────────────────────────────────────────
 [servers.github]
@@ -131,8 +136,8 @@ servers      = ["github"]
 extends      = ["minimal"]
 description  = "Tom's default loadout"
 skills       = ["tw-review"]
-subagents    = ["code-reviewer"]
-prompts      = ["adr"]
+subagents    = ["code-reviewer.md"]
+prompts      = ["adr.md"]
 servers      = ["atlassian"]
 
 # Schema v3: no [[scopes]] blocks. Globals come from per-agent

@@ -55,13 +55,13 @@ capabilities = []
 [agents.c.paths.global]
 [agents.c.paths.project]
 [skills.s1]
-source = "/tmp/x1"
+source = "/nonexistent/twagent/x1"
 [skills.s2]
-source = "/tmp/x2"
+source = "/nonexistent/twagent/x2"
 [subagents.r1]
-source = "/tmp/r1"
+source = "/nonexistent/twagent/r1"
 [prompts.p1]
-source = "/tmp/p1"
+source = "/nonexistent/twagent/p1"
 [servers.srv1]
 type = "stdio"
 command = "x"
@@ -76,7 +76,9 @@ prompts = ["p1"]
 """
     config_path = tmp_path / "config.toml"
     config_path.write_text(config_text)
-    with pytest.warns(UserWarning):  # /tmp source paths missing
+    # Every source above is deliberately absent, so loading warns. The paths
+    # live under /nonexistent/ rather than /tmp so nothing can occupy them.
+    with pytest.warns(UserWarning):
         return load(config_path)
 
 

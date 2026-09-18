@@ -1072,11 +1072,15 @@ description = "Default instructions template (Jinja2)"
 source      = "~/dev/s/private/skills/bkmr-memory"
 description = "Persistent memory via the bkmr CLI"
 
-# [subagents.code-reviewer]
+# Skills are directories, so their name needs no extension. Subagents and
+# prompts are files, and the name is the symlink name verbatim — it must carry
+# the extension the agent globs for (`.md`), quoted because of the dot.
+
+# [subagents."code-reviewer.md"]
 # source = "~/dev/s/private/agents/code-reviewer.md"
 
-# [prompts.adr]
-# source = "~/dev/s/private/prompts/adr.prompt.md"
+# [prompts."adr.md"]
+# source = "~/dev/s/private/prompts/adr.md"
 
 
 # ─── MCP servers (canonical, agent-agnostic) ───────────────────────────

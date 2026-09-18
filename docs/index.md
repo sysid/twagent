@@ -31,6 +31,7 @@ TOML that owns the truth, plus one CLI that materialises it onto disk.
 | Look up a command or flag | [Reference: Commands](reference/commands.md) |
 | Look up TOML schema details | [Reference: Configuration](reference/config.md) |
 | Get a question answered | [FAQ](faq.md) |
+| Know why something is the way it is | [Decision log (ADRs)](adr/) |
 
 ## At a glance
 

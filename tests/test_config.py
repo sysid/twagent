@@ -199,7 +199,7 @@ instructions = "AGENT.md.j2"
 
 def test_legacy_common_templates_dir_rejected(tmp_path):
     body = (
-        'schema_version = 3\n[common]\ntemplates_dir = "/tmp/x"\n[common.vars]\n'
+        'schema_version = 3\n[common]\ntemplates_dir = "/nonexistent/twagent/x"\n[common.vars]\n'
         + MINIMAL_OK.split("schema_version = 3\n", 1)[1]
     )
     with pytest.raises(ConfigError, match="templates_dir.*not supported"):
@@ -238,9 +238,9 @@ def test_instruction_and_skill_same_name_rejected(tmp_path):
         MINIMAL_OK
         + """
 [instructions.collide]
-source = "/tmp/x"
+source = "/nonexistent/twagent/x"
 [skills.collide]
-source = "/tmp/y"
+source = "/nonexistent/twagent/y"
 """
     )
     with pytest.raises(ConfigError, match="defined both as"):
@@ -387,7 +387,7 @@ def test_profile_and_skill_same_name_rejected(tmp_path):
         MINIMAL_OK
         + """
 [skills.collide]
-source = "/tmp/x"
+source = "/nonexistent/twagent/x"
 """
     )
     body = body.replace("[profiles.empty]\n", "[profiles.empty]\n[profiles.collide]\n")
@@ -400,7 +400,7 @@ def test_skill_and_server_same_name_rejected(tmp_path):
         MINIMAL_OK
         + """
 [skills.collide]
-source = "/tmp/x"
+source = "/nonexistent/twagent/x"
 [servers.collide]
 type = "stdio"
 command = "noop"
@@ -415,9 +415,9 @@ def test_subagent_and_prompt_same_name_rejected(tmp_path):
         MINIMAL_OK
         + """
 [subagents.collide]
-source = "/tmp/x"
+source = "/nonexistent/twagent/x"
 [prompts.collide]
-source = "/tmp/y"
+source = "/nonexistent/twagent/y"
 """
     )
     with pytest.raises(ConfigError, match="defined both as"):

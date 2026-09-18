@@ -37,7 +37,10 @@ skills = ["~/no-default/skills"]
 skills = [".s"]
 [agents.no-default.vars]
 [skills.x]
-source = "/tmp/x"
+# Absent on purpose — the tests using this fixture assert the
+# missing-source UserWarning. Never point this at /tmp: a stray /tmp/x
+# silences the warning and fails every one of them.
+source = "/nonexistent/twagent/x"
 [profiles.base]
 skills = ["x"]
 [profiles.full]
