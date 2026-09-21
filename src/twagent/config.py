@@ -678,6 +678,10 @@ def _validate_no_name_shadow(config: Configuration) -> None:
     `--select` is polymorphic: each name can resolve to a profile (expanded)
     or to an artifact (literal). Allowing the same name in both registries
     would silently change behaviour depending on lookup order.
+
+    Second consumer: `deploy._global_artifact_names` builds a capability-flat
+    name set for global-vs-project dedup. Relaxing uniqueness here would make
+    that dedup cross-capability — fix it there before touching this.
     """
     logger.debug("config._validate_no_name_shadow: scanning for collisions")
     artifact_names: dict[str, str] = {}

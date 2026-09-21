@@ -15,6 +15,9 @@ Pi, Codex, VS Code, opencode. **One canonical TOML, one CLI, two deploy modes.**
   fields), so `twagent` never writes resolved credentials.
 - **Two deploy modes**: globally (each agent's default profile to
   `~/.claude/`, `~/.copilot/`, etc.) or locally (into the current directory).
+- **Deduplicated end to end**: an artifact reaches an agent exactly once, no
+  matter how many profiles ask for it — overlapping bundles never cost you
+  context window. See [Deduplication](#deduplication).
 
 ```sh
 twagent apply --global                          # sync everything globally
@@ -72,6 +75,53 @@ set.
 
 Without a `global_profile`, `apply --global` skips that agent entirely — it
 only deploys agents that declare one.
+
+## Deduplication
+
+Profiles are meant to overlap. Two bundles that both want `tw-ai-add` is a
+feature, not a mistake — so twagent guarantees the artifact reaches the agent
+**once**. Every duplicate skill an agent loads is a skill description burnt in
+its context window for nothing.
+
+```toml
+[profiles.wiki]
+skills = ["tw-ai-add", "twiki-query", "twiki-lint", "twiki-ingest", "tw-aws-add"]
+
+[profiles.core]
+skills = ["twmux", "skill-creator", "bkmr-memory", "tw-ai-add", "tw-aws-add"]
+```
+
+```sh
+$ twagent apply -s wiki,core
+# 10 references in → 8 skills resolved. tw-ai-add and tw-aws-add collapse.
+# (Locally, layer 3 below may then drop more: whatever is already global.)
+```
+
+Four layers, each doing a different job:
+
+| # | Collapses | When |
+|---|---|---|
+| 1 | Repeats inside one `extends` tree, including plugin members | Always. Depth-first, parent-first, **first occurrence wins**; a `visited` set makes diamond inheritance and cycles safe. |
+| 2 | Repeats across several `--select` names | Always. Profiles, plugins and bare artifact names merge into one first-seen-wins list per kind. |
+| 3 | A project copy of something already deployed globally | Local `apply` only, **on by default**. Agents read both layers, so a local copy of a global skill is loaded twice. `--no-dedup` forces the local copy. |
+| 4 | Anything that survived 1–3 | Always. Deploy is keyed by artifact name, and the name *is* the symlink name — one directory entry per name, by construction. |
+
+Layers 1, 2 and 4 are unconditional; there is no flag to switch them off.
+Layer 3 is the one that saves real context, and the only one you can opt out of:
+
+```sh
+twagent apply -s wiki            # skips skills already in ~/.claude/skills
+twagent apply -s wiki --no-dedup # deploys them locally anyway
+twagent apply -s wiki -n         # dry run: prints what dedup skipped
+```
+
+Two things are deliberately **not** deduplicated: MCP configuration and
+instruction templates. Both are merged or rendered files rather than directories
+of symlinks, so "the same one twice" is not a state they can reach.
+
+→ Details: [Dedup against the global
+layer](docs/reference/commands.md#dedup-against-the-global-layer) and
+[Composition semantics](docs/overview.md).
 
 ## Install
 

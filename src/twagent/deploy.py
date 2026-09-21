@@ -475,11 +475,22 @@ _DEDUP_KINDS = ("skills", "subagents", "prompts")
 
 
 def _global_artifact_names(agent: Agent) -> set[str]:
-    """Names of symlinked artifacts already present on-disk at the global layer.
+    """Names of artifacts already present on-disk at the agent's global layer.
 
     Local apply skips these: agents read both layers, so a project copy of a
     globally-deployed skill/subagent/prompt is a pure duplicate. MCP and
     instructions are excluded — they are merged/rendered files, not dirs.
+
+    Every directory entry counts, symlink or not: a real directory sitting in
+    `~/.claude/skills` is loaded by the agent exactly like a twagent symlink,
+    so it must suppress the project copy just the same. `is_symlink()` here
+    would reintroduce the duplicate it exists to prevent.
+
+    The returned set is deliberately flat — capability is dropped, so a global
+    *skill* named X also suppresses a project *subagent* named X. That is safe
+    ONLY because `config._validate_no_name_shadow` makes artifact names unique
+    across all registries. If that invariant is ever relaxed, this must become
+    a per-capability mapping.
     """
     names: set[str] = set()
     for capability in _DEDUP_KINDS:
